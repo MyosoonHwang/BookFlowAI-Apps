@@ -18,7 +18,7 @@ phases:
     commands:
       # ── 0. dynamic vars ──
       - cd ecs-sims
-      - export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}"
+      - export IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-7)
       - echo "IMAGE_TAG=$IMAGE_TAG  CLUSTER=$ECS_CLUSTER_NAME  REGISTRY=$ECR_REGISTRY"
       - export SVCS=$(find . -mindepth 2 -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed 's|^\./||' | sort)
       - |
