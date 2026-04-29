@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${POD_NAME}
+  labels: { app: ${POD_NAME} }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ${POD_NAME} }
+  template:
+    metadata:
+      labels: { app: ${POD_NAME} }
+    spec:
+      containers:
+        - name: ${POD_NAME}
+          image: ${ECR_REGISTRY}/${PROJECT_NAME}/${POD_NAME}:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
