@@ -1,0 +1,35 @@
+# Build artifacts
+*.zip
+*.tar
+*.tar.gz
+target/
+build/
+dist/
+out/
+.gradle/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+
+# Docker
+.dockerignore.bak
+
+# Glue local
+glue-temp/
+spark-warehouse/
