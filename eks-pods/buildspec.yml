@@ -34,7 +34,7 @@ phases:
     commands:
       # ── 0. dynamic vars (한 phase 내에서만 유효 · 다른 phase 로 안 넘어감) ──
       - cd eks-pods
-      - export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}"
+      - export IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-7)
       - echo "IMAGE_TAG=$IMAGE_TAG  NAMESPACE=$NAMESPACE  REGISTRY=$ECR_REGISTRY"
       - export PODS=$(find . -mindepth 2 -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed 's|^\./||' | sort)
       - |
