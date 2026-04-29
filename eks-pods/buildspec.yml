@@ -1,0 +1,89 @@
+# BookFlowAI-Apps · eks-pods · CodeBuild buildspec
+# CodeBuild 가 실행하는 명령. eks-pipeline.yaml 의 CodeBuildProject 가 reference.
+#
+# Env vars (eks-pipeline.yaml 가 주입):
+#   AWS_REGION · AWS_ACCOUNT_ID · ECR_REGISTRY · PROJECT_NAME · EKS_CLUSTER_NAME · KUBECTL_VERSION
+#
+# 흐름:
+#   install:    kubectl + envsubst 설치 (filesystem · 모든 phase 에서 사용 가능)
+#   build:      모든 로직 한 phase 에 통합 (CodeBuild phase 간 shell 변수 분리 회피)
+#               1. ECR login
+#               2. eks-pods/ 하위 Dockerfile 가진 dir 자동 발견 → docker build/push
+#               3. kubectl 인증 + namespace 보장
+#               4. 각 pod 의 k8s manifest envsubst → kubectl apply
+#               5. kubectl rollout status 검증
+
+version: 0.2
+
+env:
+  variables:
+    NAMESPACE: bookflow
+
+phases:
+  install:
+    commands:
+      # standard:7.0 + PrivilegedMode 면 Docker 자동 사용 가능 (runtime-versions docker 불필요)
+      - echo "Installing kubectl ${KUBECTL_VERSION}"
+      - curl -sLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v${KUBECTL_VERSION}.0/bin/linux/amd64/kubectl"
+      - chmod +x /usr/local/bin/kubectl
+      - kubectl version --client=true
+      # envsubst 가 없으면 설치 (standard:7.0 에 보통 있지만 안전망)
+      - which envsubst || (apt-get update -qq && apt-get install -y -qq gettext-base)
+
+  build:
+    commands:
+      # ── 0. dynamic vars (한 phase 내에서만 유효 · 다른 phase 로 안 넘어감) ──
+      - cd eks-pods
+      - export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}"
+      - echo "IMAGE_TAG=$IMAGE_TAG  NAMESPACE=$NAMESPACE  REGISTRY=$ECR_REGISTRY"
+      - export PODS=$(find . -mindepth 2 -maxdepth 2 -name Dockerfile -exec dirname {} \; | sed 's|^\./||' | sort)
+      - |
+        if [ -z "$PODS" ]; then
+          echo "no Dockerfile found in eks-pods/* · skip build"
+          exit 0
+        fi
+      - echo "Pods to build:" $PODS
+
+      # ── 1. ECR login + docker build/push ──
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - |
+        for pod in $PODS; do
+          echo "=== Building $pod ==="
+          docker build -t "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG" "$pod"
+          docker tag "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG" "$ECR_REGISTRY/$PROJECT_NAME/$pod:latest"
+          docker push "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$PROJECT_NAME/$pod:latest"
+        done
+
+      # ── 2. kubectl 인증 (Access Entry · IAM role 사전 등록 필요) ──
+      - aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+      - kubectl get ns "$NAMESPACE" 2>/dev/null || kubectl create namespace "$NAMESPACE"
+
+      # ── 3. K8s manifest envsubst → apply ──
+      - |
+        for pod in $PODS; do
+          if [ ! -d "$pod/k8s" ]; then
+            echo "skip $pod (no k8s/ dir)"
+            continue
+          fi
+          echo "=== Applying $pod ==="
+          export POD_NAME="$pod"
+          for f in "$pod"/k8s/*.yaml "$pod"/k8s/*.yml; do
+            [ -f "$f" ] || continue
+            envsubst < "$f" | kubectl apply -n "$NAMESPACE" -f -
+          done
+        done
+
+      # ── 4. Rollout status (Deployment 만 · CronJob 은 skip) ──
+      - |
+        for pod in $PODS; do
+          if kubectl get deployment "$pod" -n "$NAMESPACE" >/dev/null 2>&1; then
+            kubectl rollout status deployment/"$pod" -n "$NAMESPACE" --timeout=180s || exit 1
+          fi
+        done
+      - echo "=== Build complete ==="
+
+artifacts:
+  files:
+    - '**/*'
+  base-directory: eks-pods
