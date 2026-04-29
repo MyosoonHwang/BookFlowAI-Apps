@@ -59,7 +59,7 @@ jobs:
               "set -e",
               "cd /opt/bookflow && sudo -u ubuntu git pull origin main",
               "cd /opt/bookflow-apps && sudo -u ubuntu git pull origin main",
-              "cd /opt/bookflow && ansible-playbook cicd/ansible/playbooks/glue-deploy.yml -e github_sha=${{ github.sha }}"
+              "cd /opt/bookflow/cicd/ansible && ansible-playbook playbooks/glue-deploy.yml -e github_sha=${{ github.sha }}"
             ]}' \
             --timeout-seconds 600 \
             --region "${{ env.AWS_REGION }}" \
