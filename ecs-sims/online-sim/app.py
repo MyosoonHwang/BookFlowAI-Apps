@@ -6,7 +6,7 @@ import json, os, random, time, uuid
 from datetime import datetime, timezone
 import boto3
 
-STREAM_NAME = os.environ.get("KINESIS_STREAM", "bookflow-pos-events")
+STREAM_NAME = os.environ.get("KINESIS_STREAM_NAME", "bookflow-pos-events")
 REGION      = os.environ.get("AWS_REGION", "ap-northeast-1")
 INTERVAL    = (10, 30)   # 초
 
