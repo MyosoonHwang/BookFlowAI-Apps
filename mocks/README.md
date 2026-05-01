@@ -55,13 +55,49 @@ gcp-bigquery-mock.stubs.svc.cluster.local
 
 ## Build & deploy
 
+Two-step: image push, then helm install/upgrade. (Weekend workaround until
+CodeStar is available - then a CI/CD pipeline does the push, helm step stays
+the same.)
+
 ```bash
+# build + push only (no deploy)
 AWS_PROFILE=bookflow-admin AWS_REGION=ap-northeast-1 ./build-all.sh
+
+# build + push + helm upgrade in one shot
+AWS_PROFILE=bookflow-admin AWS_REGION=ap-northeast-1 ./build-all.sh --deploy
+
+# or run helm directly (chart only)
+helm upgrade --install csp-mocks ./charts/csp-mocks \
+  --create-namespace \
+  --set ecrRegistry=994878981869.dkr.ecr.ap-northeast-1.amazonaws.com \
+  --set imageTag=latest
 ```
 
-Builds 5 images with the shared `Dockerfile`, pushes to ECR
-(`bookflow/{name}:latest`), then `kubectl apply` the k8s manifests after
-substituting the ECR registry.
+Verify:
+
+```bash
+kubectl get pods -n stubs
+kubectl get svc  -n stubs
+kubectl run -n stubs curlpod --rm -it --image=curlimages/curl -- \
+  curl -sf http://azure-entra-mock/health
+```
+
+## Helm chart structure
+
+```
+charts/csp-mocks/
+  Chart.yaml
+  values.yaml          # ecrRegistry, imageTag, mocks list (range)
+  templates/
+    namespace.yaml
+    deployment.yaml    # range over .Values.mocks
+    service.yaml       # range
+    _helpers.tpl
+```
+
+Add or remove a mock by editing only `values.yaml`'s `mocks` list - templates
+loop over it. New mock entry needs the matching directory `mocks/<name>/src/`
+plus listing in `build-all.sh`.
 
 ## Switching pod target between mock and real
 
