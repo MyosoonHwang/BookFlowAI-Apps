@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stubs
+  labels:
+    purpose: csp-mock
+    environment: dev
