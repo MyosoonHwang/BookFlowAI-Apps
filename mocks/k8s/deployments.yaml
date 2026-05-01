@@ -150,40 +150,8 @@ metadata:
 spec:
   selector: { app: gcp-bigquery-mock }
   ports: [{ name: http, port: 80, targetPort: 80 }]
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: publisher-api-mock
-  namespace: stubs
-  labels: { app: publisher-api-mock, csp: external }
-spec:
-  replicas: 1
-  selector:
-    matchLabels: { app: publisher-api-mock }
-  template:
-    metadata:
-      labels: { app: publisher-api-mock, csp: external }
-    spec:
-      containers:
-        - name: app
-          image: REPLACE_ME/bookflow/publisher-api-mock:latest
-          ports:
-            - { containerPort: 80, name: http }
-          resources:
-            requests: { cpu: "50m", memory: "96Mi" }
-            limits:   { cpu: "200m", memory: "256Mi" }
-          readinessProbe:
-            httpGet: { path: /health, port: 80 }
-          livenessProbe:
-            httpGet: { path: /health, port: 80 }
-            periodSeconds: 15
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: publisher-api-mock
-  namespace: stubs
-spec:
-  selector: { app: publisher-api-mock }
-  ports: [{ name: http, port: 80, targetPort: 80 }]
+# NOTE: publisher API is NOT mocked - it is a real BookFlow component
+# (EC2 ASG behind External ALB in Egress VPC, see V6.2 slide 28 +
+# infra/aws/40-compute-runtime/publisher-asg.yaml). publish-watcher
+# CronJob targets the real publisher ALB DNS via env var
+# PUBLISHER_API_BASE_URL.

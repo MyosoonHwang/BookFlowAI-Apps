@@ -16,7 +16,6 @@ MOCKS=(
   azure-logic-apps-mock
   gcp-vertex-mock
   gcp-bigquery-mock
-  publisher-api-mock
 )
 
 cd "$(dirname "$0")"

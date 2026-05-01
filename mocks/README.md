@@ -1,8 +1,9 @@
 # BookFlow CSP Mocks
 
-5 fake services that imitate real cross-CSP endpoints so pods can be
-developed/tested without Azure/GCP credentials. Wire format matches the real
-APIs - swap the `*_BASE_URL` env in each pod and you are talking to prod.
+4 fake services that imitate real **cross-CSP** endpoints (Azure / GCP) so
+pods can be developed/tested without those credentials. Wire format matches
+the real APIs - swap the `*_BASE_URL` env in each pod and you are talking to
+prod.
 
 ## Mocks
 
@@ -12,7 +13,11 @@ APIs - swap the `*_BASE_URL` env in each pod and you are talking to prod.
 | `azure-logic-apps-mock` | `*.koreacentral.logic.azure.com` (12 webhooks) | notification-svc |
 | `gcp-vertex-mock` | `*-aiplatform.googleapis.com` (predict) | forecast-svc |
 | `gcp-bigquery-mock` | `bigquery.googleapis.com/bigquery/v2/.../queries` | forecast-svc |
-| `publisher-api-mock` | external publisher new-book-request API | publish-watcher |
+
+The publisher new-book-request API is **not mocked** - it is a real BookFlow
+component (EC2 ASG behind External ALB in Egress VPC, see V6.2 slide 28 +
+`infra/aws/40-compute-runtime/publisher-asg.yaml`). publish-watcher CronJob
+targets that ALB DNS via env `PUBLISHER_API_BASE_URL`.
 
 ## Endpoints
 
@@ -39,9 +44,6 @@ APIs - swap the `*_BASE_URL` env in each pod and you are talking to prod.
 - Detects `forecast_results` queries -> 30 deterministic rows (D+2~D+5).
 - Other tables -> empty.
 
-### publisher-api-mock
-- `GET /api/v1/new-book-requests?since=ISO8601&limit=50` -> 0~5 items per minute.
-
 ## DNS (in-cluster)
 
 ```
@@ -49,7 +51,6 @@ azure-entra-mock.stubs.svc.cluster.local
 azure-logic-apps-mock.stubs.svc.cluster.local
 gcp-vertex-mock.stubs.svc.cluster.local
 gcp-bigquery-mock.stubs.svc.cluster.local
-publisher-api-mock.stubs.svc.cluster.local
 ```
 
 ## Build & deploy
