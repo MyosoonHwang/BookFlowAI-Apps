@@ -34,5 +34,10 @@ credentials.json
 glue-temp/
 spark-warehouse/
 
+<<<<<<< HEAD
 # Design source (encrypted .pen, accessed via Pencil MCP only)
 eks-pods/uiux.pen
+=======
+# Design artifacts (참조용 · git 에 안 올림)
+*.pen
+>>>>>>> 389623d (chore: gitignore *.pen (uiux.pen design source))
