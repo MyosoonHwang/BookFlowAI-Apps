@@ -1,9 +1,4 @@
-"""psycopg3 connection pool + Redis client.
-
-Pool opens at startup with short timeout. If RDS is briefly unreachable,
-pool stays None — pod still answers /health (loadbalancer keeps it in service).
-Routes that use db_conn() raise 503 until pool comes up via lazy reopen.
-"""
+"""psycopg3 pool + Redis client (tolerant init)."""
 import logging
 from contextlib import contextmanager
 
