@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+@layer components {
+  .panel { @apply bg-gh-panel border border-gh-border rounded-md p-3; }
+  .h3-tag { @apply m-0 mb-2 text-gh-blue text-xs uppercase tracking-wider; }
+  .pill { @apply inline-block px-2 py-0.5 rounded-full text-[11px]; }
+  .pill-up { @apply pill bg-green-700 text-white; }
+  .pill-down { @apply pill bg-red-700 text-white; }
+  .pill-connecting { @apply pill bg-yellow-700 text-white; }
+  .metric { @apply p-2.5 bg-gh-bg border border-gh-border rounded; }
+  .metric-label { @apply text-[10px] text-gh-muted uppercase tracking-wider; }
+  .metric-value { @apply text-2xl font-bold text-gh-blue mt-0.5; }
+  .btn { @apply bg-gh-border text-gh-text border border-gh-border px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-[#3a3f47]; }
+  .ipt { @apply bg-gh-bg text-gh-text border border-gh-border rounded px-2 py-1 text-xs; }
+}
