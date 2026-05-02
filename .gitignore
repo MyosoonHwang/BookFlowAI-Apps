@@ -33,3 +33,6 @@ credentials.json
 # Glue local
 glue-temp/
 spark-warehouse/
+
+# Design source (encrypted .pen, accessed via Pencil MCP only)
+eks-pods/uiux.pen

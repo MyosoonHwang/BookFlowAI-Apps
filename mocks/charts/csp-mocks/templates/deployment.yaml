@@ -21,7 +21,7 @@ spec:
       containers:
         - name: app
           image: {{ include "csp-mocks.image" (dict "root" $ "mock" $mock) }}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ if eq $.Values.imageTag "latest" }}Always{{ else }}IfNotPresent{{ end }}
           ports:
             - containerPort: 80
               name: http
