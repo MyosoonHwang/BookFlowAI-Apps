@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: decision-svc-env
+  namespace: bookflow
+data:
+  DECISION_RDS_HOST: "bookflow-postgres.c9c8iw8ock7h.ap-northeast-1.rds.amazonaws.com"
+  DECISION_RDS_PORT: "5432"
+  DECISION_RDS_DB: "bookflow"
+  DECISION_RDS_USER: "decision_svc"
+  DECISION_REDIS_HOST: "bookflow-redis.xxpw8f.0001.apne1.cache.amazonaws.com"
+  DECISION_REDIS_PORT: "6379"
+  DECISION_AUTH_MODE: "mock"
+  DECISION_LOG_LEVEL: "INFO"
