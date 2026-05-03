@@ -145,6 +145,91 @@ export type NewBookRequest = {
 export const fetchNewBookRequests = (role: Role, limit = 50) =>
   getJson<{ items: NewBookRequest[] }>(`/dashboard/new-book-requests?limit=${limit}`, role);
 
+// ─── Inventory heatmap (HQ Inventory) ──────────────────────────────
+export type LocationCell = {
+  location_id: number;
+  name: string;
+  location_type: string | null;
+  region: string | null;
+  wh_id: number | null;
+  sku_count: number;
+  total_qty: number;
+  reserved_qty: number;
+  low_count: number;
+  zero_count: number;
+};
+export const fetchInventoryHeatmap = (role: Role) =>
+  getJson<{ items: LocationCell[] }>('/dashboard/locations/heatmap', role);
+
+// ─── Inventory by store (Branch Inventory) ──────────────────────────
+export type StoreInventoryRow = {
+  isbn13: string;
+  on_hand: number;
+  reserved_qty: number;
+  available: number;
+  safety_stock: number;
+  updated_at: string | null;
+  title: string | null;
+  author: string | null;
+  category: string | null;
+  price_sales: number | null;
+};
+export const fetchInventoryByStore = (role: Role, store_id: number) =>
+  getJson<{ store_id: number; items: StoreInventoryRow[] }>(
+    `/dashboard/store-inventory/${store_id}`, role,
+  );
+
+// ─── Sales by specific store (Branch Sales) ─────────────────────────
+export type StoreSaleRow = {
+  txn_id: string;
+  event_ts: string;
+  isbn13: string;
+  channel: string;
+  qty: number;
+  unit_price: number;
+  revenue: number;
+  title: string | null;
+  author: string | null;
+};
+export const fetchSalesBySpecificStore = (role: Role, store_id: number, limit = 50) =>
+  getJson<{ store_id: number; items: StoreSaleRow[] }>(
+    `/dashboard/sales-by-store/${store_id}?limit=${limit}`, role,
+  );
+
+// ─── Instructions (WH Instructions / Branch Inbound) ────────────────
+export type Instruction = {
+  order_id: string;
+  order_type: string;
+  isbn13: string;
+  source_location_id: number | null;
+  target_location_id: number | null;
+  qty: number;
+  urgency_level: string;
+  status: string;
+  approved_at: string | null;
+  title: string | null;
+};
+export const fetchInstructions = (role: Role, wh_id?: number) => {
+  const qs = wh_id !== undefined ? `?wh_id=${wh_id}` : '';
+  return getJson<{ items: Instruction[] }>(`/dashboard/instructions${qs}`, role);
+};
+
+// ─── Curation (Branch Curation) ─────────────────────────────────────
+export type CurationItem = {
+  isbn13: string;
+  z_score: number | null;
+  mentions_count: number;
+  detected_at: string;
+  title: string | null;
+  author: string | null;
+  category: string | null;
+  price_sales: number | null;
+  on_hand: number;
+  available: number;
+};
+export const fetchCuration = (role: Role, store_id: number) =>
+  getJson<{ store_id: number; items: CurationItem[] }>(`/dashboard/curation/${store_id}`, role);
+
 // ─── Notifications ──────────────────────────────────────────────────
 export type Notification = {
   notification_id: string;
