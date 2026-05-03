@@ -21,19 +21,28 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/notification", tags=["notification"])
 
 
-# event_type -> Redis 채널 매핑 (시트04 Pub/Sub channel + Logic Apps event 분기)
+# event_type -> Redis 채널 매핑 (시트04 Pub/Sub matrix · 1:1 정렬)
+#
+# 시트04 Redis 채널 4종 (Pub/Sub):
+#   stock.changed     - inventory-svc 가 직접 publish (notification-svc 경유 X)
+#   order.pending     - 신규 PENDING 주문 발생 시점에만 (OrderPending 단 1종)
+#   spike.detected    - SNS 급등 도서 (SpikeUrgent 단 1종)
+#   newbook.request   - 출판사 신간 신청 (NewBookRequest 단 1종)
+#
+# 12 events 중 위 3개만 Redis 채널에 publish · 나머지 9개는 Logic Apps webhook 만 호출.
+# (OrderApproved/OrderRejected/AutoExecuted/AutoRejected/StockDepart/StockArrival/Return/LambdaAlarm/Deployment)
 EVENT_CHANNEL = {
     "OrderPending":         "order.pending",
-    "OrderApproved":        "order.pending",
-    "OrderRejected":        "order.pending",
-    "AutoExecutedUrgent":   "order.pending",
-    "AutoRejectedBatch":    "order.pending",
+    "OrderApproved":        None,
+    "OrderRejected":        None,
+    "AutoExecutedUrgent":   None,
+    "AutoRejectedBatch":    None,
     "SpikeUrgent":          "spike.detected",
-    "StockDepartPending":   "order.pending",
-    "StockArrivalPending":  "order.pending",
+    "StockDepartPending":   None,
+    "StockArrivalPending":  None,
     "NewBookRequest":       "newbook.request",
-    "ReturnPending":        "order.pending",
-    "LambdaAlarm":          None,  # Phase 4 ops 채널
+    "ReturnPending":        None,
+    "LambdaAlarm":          None,
     "DeploymentRollback":   None,
 }
 

@@ -10,11 +10,20 @@ Stage / order_type / approval_side 행렬 (시트10 + 시트04 12 events):
 
 Stage 2 양쪽 (SOURCE+TARGET) 모두 APPROVED → status=APPROVED 자동 전환.
 hq-admin 은 모든 stage 의 FINAL 권한 가짐 (escalation).
+
+승인/거절 후 notification-svc /notification/send 호출 (시트04 12 events 정합):
+  - approve → OrderApproved
+  - reject  → OrderRejected
+  - returns/approve → ReturnPending (승인 시점에 알림)
+  - new-book/approve → NewBookRequest (승인 시점에 알림)
 """
 import json
+import logging
+import os
 from datetime import datetime
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import AuthContext, require_auth
@@ -29,7 +38,35 @@ from ..models import (
     ReturnApproveResponse,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/intervention", tags=["intervention"])
+
+NOTIFICATION_SVC_URL = os.environ.get(
+    "INTERVENTION_NOTIFICATION_SVC_URL",
+    "http://notification-svc.bookflow.svc.cluster.local",
+)
+
+
+def _notify(token: str, event_type: str, severity: str, payload: dict, correlation_id: str | None = None) -> None:
+    """notification-svc /send 호출 (실패 비치명 · log only)."""
+    body = {
+        "event_type": event_type,
+        "severity": severity,
+        "recipients": [],
+        "channels": "redis,websocket" if event_type == "OrderPending" else "websocket,logic-apps",
+        "payload_summary": payload,
+    }
+    if correlation_id:
+        body["correlation_id"] = correlation_id
+    try:
+        with httpx.Client(timeout=2.0) as c:
+            c.post(
+                f"{NOTIFICATION_SVC_URL}/notification/send",
+                headers={"Authorization": token},
+                json=body,
+            )
+    except Exception as e:
+        log.warning("notification-svc /send (%s) failed (non-fatal): %s", event_type, e)
 
 
 def _location_wh(cur, location_id: int | None) -> int | None:
@@ -256,10 +293,29 @@ def _record_approval(conn, order_id: str, ctx: AuthContext, side: str, decision:
 def approve(req: ApproveRequest, ctx: AuthContext = Depends(require_auth)):
     with db_conn() as conn:
         with conn.cursor() as cur:
-            _validate_authority(cur, ctx, str(req.order_id), req.approval_side)
+            order_type, source_wh, target_wh = _validate_authority(cur, ctx, str(req.order_id), req.approval_side)
         aid, decided_at = _record_approval(conn, str(req.order_id), ctx, req.approval_side, "APPROVED", None)
+        # WH_TRANSFER 양쪽 (SOURCE+TARGET) 모두 APPROVED 됐는지 후-검증 → final notification 보낼지 판단
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM pending_orders WHERE order_id = %s", (str(req.order_id),))
+            final_status = cur.fetchone()[0]
         conn.commit()
 
+    # 시트04 ②OrderApproved · 양쪽 다 APPROVED 된 경우만 'final' 알림 (WH_TRANSFER 한쪽만 승인 시 부분 진행)
+    _notify(
+        ctx.token, "OrderApproved",
+        severity="INFO",
+        payload={
+            "order_id": str(req.order_id),
+            "order_type": order_type,
+            "approval_side": req.approval_side,
+            "approval_id": aid,
+            "approver_role": ctx.role,
+            "approver_wh_id": ctx.scope_wh_id,
+            "final_status": final_status,
+        },
+        correlation_id=str(req.order_id),
+    )
     return ApprovalResponse(approval_id=aid, order_id=req.order_id, decision="APPROVED", decided_at=decided_at)
 
 
@@ -267,10 +323,25 @@ def approve(req: ApproveRequest, ctx: AuthContext = Depends(require_auth)):
 def reject(req: RejectRequest, ctx: AuthContext = Depends(require_auth)):
     with db_conn() as conn:
         with conn.cursor() as cur:
-            _validate_authority(cur, ctx, str(req.order_id), req.approval_side)
+            order_type, source_wh, target_wh = _validate_authority(cur, ctx, str(req.order_id), req.approval_side)
         aid, decided_at = _record_approval(conn, str(req.order_id), ctx, req.approval_side, "REJECTED", req.reject_reason)
         conn.commit()
 
+    # 시트04 ③OrderRejected
+    _notify(
+        ctx.token, "OrderRejected",
+        severity="WARNING",
+        payload={
+            "order_id": str(req.order_id),
+            "order_type": order_type,
+            "approval_side": req.approval_side,
+            "approval_id": aid,
+            "approver_role": ctx.role,
+            "approver_wh_id": ctx.scope_wh_id,
+            "reject_reason": req.reject_reason,
+        },
+        correlation_id=str(req.order_id),
+    )
     return ApprovalResponse(approval_id=aid, order_id=req.order_id, decision="REJECTED", decided_at=decided_at)
 
 
@@ -300,6 +371,18 @@ def returns_approve(req: ReturnApproveRequest, ctx: AuthContext = Depends(requir
                 (ctx.user_id, str(req.return_id), json.dumps({"note": req.note})),
             )
         conn.commit()
+
+    # 시트04 ⑩ReturnPending (HQ 승인 = 반품 처리 시작 시점 알림)
+    _notify(
+        ctx.token, "ReturnPending",
+        severity="INFO",
+        payload={
+            "return_id": str(req.return_id),
+            "approver_role": ctx.role,
+            "note": req.note,
+        },
+        correlation_id=str(req.return_id),
+    )
 
     return ReturnApproveResponse(return_id=req.return_id, status=row[0], hq_approved_at=row[1])
 
@@ -331,5 +414,17 @@ def approve_new_book_request(
                 (ctx.user_id, str(request_id), json.dumps({"isbn13": row[0]})),
             )
         conn.commit()
+
+    # 시트04 ⑨NewBookRequest (publisher-watcher 가 NEW 시점 한 번 발송 + HQ 승인 시 한 번 더)
+    _notify(
+        ctx.token, "NewBookRequest",
+        severity="INFO",
+        payload={
+            "id": request_id,
+            "isbn13": row[0],
+            "stage": "APPROVED",
+            "approver_role": ctx.role,
+        },
+    )
 
     return {"id": request_id, "status": "APPROVED", "isbn13": row[0]}
