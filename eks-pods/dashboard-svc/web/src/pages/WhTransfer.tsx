@@ -13,7 +13,7 @@ export default function WhTransfer() {
   const { role } = useOutletContext<{ role: Role }>();
   const wh = role === 'wh-manager-2' ? 2 : 1;
 
-  const q = useQuery({ queryKey: ['pending', role], queryFn: () => fetchPending(role, 100), refetchInterval: 5000 });
+  const q = useQuery({ queryKey: ['pending-transfer', role], queryFn: () => fetchPending(role, { order_type: 'WH_TRANSFER', limit: 100 }), refetchInterval: 5000 });
 
   const transfers = q.data?.items.filter((o) => o.order_type === 'WH_TRANSFER') ?? [];
   const inbound = transfers.filter((o) => o.target_location_id !== null);

@@ -13,6 +13,7 @@ import Returns from './pages/Returns';
 import Requests from './pages/Requests';
 import Spikes from './pages/Spikes';
 import WhDashboard from './pages/WhDashboard';
+import WhApprove from './pages/WhApprove';
 import WhTransfer from './pages/WhTransfer';
 import WhInstructions from './pages/WhInstructions';
 import Manual from './pages/Manual';
@@ -65,7 +66,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
             {/* WH */}
             <Route path="/wh-dashboard"    element={<WhDashboard />} />
-            <Route path="/wh-approve"      element={<Approval />} />
+            <Route path="/wh-approve"      element={<WhApprove />} />
             <Route path="/wh-transfer"     element={<WhTransfer />} />
             <Route path="/wh-instructions" element={<WhInstructions />} />
             <Route path="/wh-manual"       element={<Manual scope="WH" />} />
