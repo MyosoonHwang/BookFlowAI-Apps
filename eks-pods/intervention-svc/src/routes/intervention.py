@@ -391,12 +391,29 @@ def returns_approve(req: ReturnApproveRequest, ctx: AuthContext = Depends(requir
 @router.post("/new-book-requests/{request_id}/approve")
 def approve_new_book_request(
     request_id: int,
+    body: dict | None = None,
     ctx: AuthContext = Depends(require_auth),
 ):
-    """출판사 신간 신청 → HQ 승인. new_book_requests.status='APPROVED' 전환."""
+    """출판사 신간 신청 → HQ 편입 결정 (FR-A4.8 신간 발주 지시서 자동 실행).
+
+    body = { wh1_qty?: int >= 0, wh2_qty?: int >= 0 } - 권역별 분배 수량.
+    둘 다 0/None 이면 status APPROVED 만 (지시서 미발행 호환 모드).
+
+    효과:
+    1. new_book_requests.status='APPROVED'
+    2. wh1_qty, wh2_qty > 0 면 → pending_orders PUBLISHER_ORDER 자동 생성 (status=APPROVED · 본사 단독 승인)
+    3. ⑨NewBookRequest 알림 (시트04 12 events)
+    """
     if ctx.role != "hq-admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="신간 승인은 hq-admin 만 가능")
 
+    body = body or {}
+    wh1_qty = int(body.get("wh1_qty") or 0)
+    wh2_qty = int(body.get("wh2_qty") or 0)
+    if wh1_qty < 0 or wh2_qty < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty 는 0 이상")
+
+    new_orders: list[dict] = []
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -406,12 +423,37 @@ def approve_new_book_request(
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="요청 없음 또는 이미 처리됨")
+            isbn13 = row[0]
+
+            # 권역별 발주 지시서 자동 생성 (FR-A4.8 · 본사 신간 지시는 물류센터 자동 실행)
+            for wh_id, qty in [(1, wh1_qty), (2, wh2_qty)]:
+                if qty <= 0:
+                    continue
+                cur.execute(
+                    "SELECT location_id FROM locations WHERE wh_id = %s AND location_type = 'WAREHOUSE' LIMIT 1",
+                    (wh_id,),
+                )
+                loc = cur.fetchone()
+                target_loc = loc[0] if loc else wh_id  # fallback
+                order_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO pending_orders
+                        (order_id, order_type, isbn13, source_location_id, target_location_id,
+                         qty, urgency_level, status, approved_at)
+                    VALUES (%s, 'PUBLISHER_ORDER', %s, NULL, %s, %s, 'NEWBOOK', 'APPROVED', NOW())
+                    """,
+                    (str(order_id), isbn13, target_loc, qty),
+                )
+                new_orders.append({"order_id": str(order_id), "wh_id": wh_id, "qty": qty})
+
             cur.execute(
                 """
                 INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
                 VALUES ('user', %s, 'intervention.new_book.approve', 'new_book_requests', %s, %s)
                 """,
-                (ctx.user_id, str(request_id), json.dumps({"isbn13": row[0]})),
+                (ctx.user_id, str(request_id),
+                 json.dumps({"isbn13": isbn13, "wh1_qty": wh1_qty, "wh2_qty": wh2_qty, "orders": new_orders})),
             )
         conn.commit()
 
@@ -421,10 +463,140 @@ def approve_new_book_request(
         severity="INFO",
         payload={
             "id": request_id,
-            "isbn13": row[0],
+            "isbn13": isbn13,
             "stage": "APPROVED",
             "approver_role": ctx.role,
+            "wh1_qty": wh1_qty,
+            "wh2_qty": wh2_qty,
+            "orders_created": len(new_orders),
         },
     )
 
-    return {"id": request_id, "status": "APPROVED", "isbn13": row[0]}
+    return {
+        "id": request_id,
+        "status": "APPROVED",
+        "isbn13": isbn13,
+        "wh1_qty": wh1_qty,
+        "wh2_qty": wh2_qty,
+        "orders": new_orders,
+    }
+
+
+# ─── New book request reject ──────────────────────────────────────────────────
+@router.post("/new-book-requests/{request_id}/reject")
+def reject_new_book_request(
+    request_id: int,
+    body: dict | None = None,
+    ctx: AuthContext = Depends(require_auth),
+):
+    """본사가 신간 시스템 편입 거절. body = { reason?: str }"""
+    if ctx.role != "hq-admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="신간 거절은 hq-admin 만 가능")
+
+    reason = (body or {}).get("reason") or None
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE new_book_requests SET status = 'REJECTED', approved_at = NOW() WHERE id = %s AND status IN ('NEW','FETCHED') RETURNING isbn13",
+                (request_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="요청 없음 또는 이미 처리됨")
+            cur.execute(
+                """
+                INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
+                VALUES ('user', %s, 'intervention.new_book.reject', 'new_book_requests', %s, %s)
+                """,
+                (ctx.user_id, str(request_id), json.dumps({"isbn13": row[0], "reason": reason})),
+            )
+        conn.commit()
+
+    return {"id": request_id, "status": "REJECTED", "isbn13": row[0]}
+
+
+# ─── HQ 도서 ON/OFF + 소진 모드 (FR-A6.1 + A6.2) ────────────────────────────────
+_VALID_BOOK_STATUSES = ("NORMAL", "SOFT_DISCONTINUE", "INACTIVE")
+
+
+@router.post("/books/{isbn13}/status")
+def change_book_status(
+    isbn13: str,
+    body: dict,
+    ctx: AuthContext = Depends(require_auth),
+):
+    """본사 도서 활성/비활성 마스터 컨트롤.
+
+    - NORMAL: 자동 사이클 정상 (기본값) · active=TRUE · discontinue_mode='NONE'
+    - SOFT_DISCONTINUE: 신규 발주 차단, 재분배 허용 (forecast/decision/rebalance 가 mode 체크)
+    - INACTIVE: 자동 사이클 완전 정지 (예측·발주·재분배 모두 스킵) · active=FALSE
+
+    body = { mode: NORMAL|SOFT_DISCONTINUE|INACTIVE, reason?: str }
+    """
+    if ctx.role != "hq-admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="도서 ON/OFF 는 hq-admin 만 가능 (본사 마스터 컨트롤)")
+
+    mode = (body or {}).get("mode")
+    reason = (body or {}).get("reason") or None
+    if mode not in _VALID_BOOK_STATUSES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"mode 는 {list(_VALID_BOOK_STATUSES)} 중 하나여야 함")
+
+    if mode == "NORMAL":
+        sql = """
+            UPDATE books
+               SET active = TRUE,
+                   discontinue_mode = 'NONE',
+                   discontinue_reason = NULL,
+                   discontinue_at = NULL,
+                   discontinue_by = NULL,
+                   reactivated_at = NOW()
+             WHERE isbn13 = %s
+             RETURNING isbn13, active, discontinue_mode
+        """
+        params = (isbn13,)
+    elif mode == "SOFT_DISCONTINUE":
+        sql = """
+            UPDATE books
+               SET active = TRUE,
+                   discontinue_mode = 'SOFT_DISCONTINUE',
+                   discontinue_reason = %s,
+                   discontinue_at = NOW(),
+                   discontinue_by = %s,
+                   reactivated_at = NULL
+             WHERE isbn13 = %s
+             RETURNING isbn13, active, discontinue_mode
+        """
+        params = (reason, ctx.user_id, isbn13)
+    else:  # INACTIVE
+        sql = """
+            UPDATE books
+               SET active = FALSE,
+                   discontinue_mode = 'INACTIVE',
+                   discontinue_reason = %s,
+                   discontinue_at = NOW(),
+                   discontinue_by = %s,
+                   reactivated_at = NULL
+             WHERE isbn13 = %s
+             RETURNING isbn13, active, discontinue_mode
+        """
+        params = (reason, ctx.user_id, isbn13)
+
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail=f"isbn13 {isbn13} 를 찾을 수 없음")
+            cur.execute(
+                """
+                INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
+                VALUES ('user', %s, 'intervention.book.status', 'books', %s, %s)
+                """,
+                (ctx.user_id, isbn13, json.dumps({"mode": mode, "reason": reason})),
+            )
+        conn.commit()
+
+    return {"isbn13": row[0], "active": row[1], "discontinue_mode": row[2], "mode": mode}

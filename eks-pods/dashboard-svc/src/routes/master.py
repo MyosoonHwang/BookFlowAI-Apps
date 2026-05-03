@@ -77,18 +77,42 @@ def books(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     q: str = Query(default=""),
+    status: str = Query(default="ACTIVE", description="ACTIVE | SOFT_DC | INACTIVE | ALL"),
+    category: str = Query(default=""),
 ):
-    """books 카탈로그 (1000책) - HQ Books 페이지."""
-    where = "WHERE active = TRUE"
+    """books 카탈로그 (1000책) - HQ Books 페이지.
+
+    status:
+      - ACTIVE   = active=TRUE 만 (기본 · 판매중 + 소진모드 모두 포함)
+      - SOFT_DC  = discontinue_mode='SOFT_DISCONTINUE' (소진 모드)
+      - INACTIVE = active=FALSE (자동 사이클 정지)
+      - ALL      = 필터 없음
+    """
+    clauses: list[str] = []
     params: list = []
+
+    if status == "ACTIVE":
+        clauses.append("active = TRUE")
+    elif status == "SOFT_DC":
+        clauses.append("discontinue_mode = 'SOFT_DISCONTINUE'")
+    elif status == "INACTIVE":
+        clauses.append("active = FALSE")
+    # ALL = no filter
+
     if q:
-        where += " AND (title ILIKE %s OR author ILIKE %s OR isbn13 = %s)"
+        clauses.append("(title ILIKE %s OR author ILIKE %s OR isbn13 = %s)")
         params.extend([f"%{q}%", f"%{q}%", q])
-    params.extend([limit, offset])
+    if category:
+        clauses.append("category_name = %s")
+        params.append(category)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params_with_paging = params + [limit, offset]
 
     sql = f"""
         SELECT isbn13, title, author, publisher, pub_date, category_name,
-               price_standard, price_sales, discontinue_mode, expected_soldout_at
+               price_standard, price_sales, active, discontinue_mode,
+               discontinue_reason, discontinue_at, expected_soldout_at
           FROM books
           {where}
          ORDER BY isbn13
@@ -96,9 +120,9 @@ def books(
     """
     count_sql = f"SELECT count(*) FROM books {where}"
     with db_conn() as conn, conn.cursor() as cur:
-        cur.execute(count_sql, params[:-2])
+        cur.execute(count_sql, params)
         total = cur.fetchone()[0]
-        cur.execute(sql, params)
+        cur.execute(sql, params_with_paging)
         rows = cur.fetchall()
 
     return {
@@ -111,8 +135,56 @@ def books(
                 "pub_date": r[4].isoformat() if r[4] else None,
                 "category": r[5],
                 "price_standard": r[6], "price_sales": r[7],
-                "discontinue_mode": r[8],
-                "expected_soldout_at": r[9].isoformat() if r[9] else None,
+                "active": r[8],
+                "discontinue_mode": r[9],
+                "discontinue_reason": r[10],
+                "discontinue_at": r[11].isoformat() if r[11] else None,
+                "expected_soldout_at": r[12].isoformat() if r[12] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/books/categories")
+def book_categories(_: AuthContext = Depends(require_auth)):
+    """books 카테고리 distinct 리스트 - 필터 드롭다운용."""
+    sql = """
+        SELECT category_name, count(*) AS n
+          FROM books
+         WHERE category_name IS NOT NULL
+         GROUP BY category_name
+         ORDER BY n DESC
+         LIMIT 50
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    return {"items": [{"category": r[0], "count": r[1]} for r in rows]}
+
+
+@router.get("/books/{isbn13}/audit")
+def book_audit(isbn13: str, _: AuthContext = Depends(require_auth)):
+    """도서 변경 이력 - audit_log 에서 entity_type='books' AND entity_id=isbn13."""
+    sql = """
+        SELECT log_id, ts, actor_id, action, after_state
+          FROM audit_log
+         WHERE entity_type = 'books' AND entity_id = %s
+         ORDER BY ts DESC
+         LIMIT 50
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (isbn13,))
+        rows = cur.fetchall()
+    return {
+        "isbn13": isbn13,
+        "items": [
+            {
+                "log_id":      r[0],
+                "ts":          r[1].isoformat() if r[1] else None,
+                "actor_id":    str(r[2]) if r[2] else None,
+                "action":      r[3],
+                "after_state": r[4],
             }
             for r in rows
         ],

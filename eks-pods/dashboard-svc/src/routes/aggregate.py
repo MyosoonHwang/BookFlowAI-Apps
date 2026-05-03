@@ -17,7 +17,9 @@ from ..clients import (
     get_warehouse_inventory,
     post_decision_decide,
     post_intervention_approve,
+    post_intervention_book_status,
     post_intervention_new_book_approve,
+    post_intervention_new_book_reject,
     post_intervention_reject,
     post_intervention_returns_approve,
     post_notification_send,
@@ -111,9 +113,38 @@ async def returns_approve(body: dict = Body(...), ctx: AuthContext = Depends(req
 
 
 @router.post("/new-book-requests/{request_id}/approve")
-async def new_book_approve(request_id: int, ctx: AuthContext = Depends(require_auth)):
-    """신간 신청 승인 (intervention-svc /intervention/new-book-requests/{id}/approve proxy)."""
-    sc, data = await post_intervention_new_book_approve(request_id, ctx.token)
+async def new_book_approve(
+    request_id: int,
+    body: dict = Body(default_factory=dict),
+    ctx: AuthContext = Depends(require_auth),
+):
+    """신간 편입 결정 (intervention-svc proxy).
+
+    body = { wh1_qty?: int, wh2_qty?: int } - 권역별 분배 수량.
+    승인 시 자동으로 PUBLISHER_ORDER pending_orders 2건 생성 (FR-A4.8).
+    """
+    sc, data = await post_intervention_new_book_approve(request_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/new-book-requests/{request_id}/reject")
+async def new_book_reject(
+    request_id: int,
+    body: dict = Body(default_factory=dict),
+    ctx: AuthContext = Depends(require_auth),
+):
+    """신간 편입 거절 (intervention-svc proxy). body = { reason?: str }"""
+    sc, data = await post_intervention_new_book_reject(request_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/books/{isbn13}/status")
+async def book_status_change(isbn13: str, body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """HQ 도서 ON/OFF + 소진 모드 (intervention-svc /intervention/books/{isbn13}/status proxy).
+
+    body = { mode: NORMAL|SOFT_DISCONTINUE|INACTIVE, reason?: str }
+    """
+    sc, data = await post_intervention_book_status(isbn13, body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
 
 
