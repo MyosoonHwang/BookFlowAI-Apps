@@ -15,6 +15,7 @@ from ..clients import (
     get_notifications_recent,
     get_pending_orders,
     get_warehouse_inventory,
+    post_decision_decide,
     post_intervention_approve,
     post_intervention_reject,
     post_notification_send,
@@ -81,6 +82,13 @@ async def intervene_reject(body: dict = Body(...), ctx: AuthContext = Depends(re
 async def notify_send(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
     sc, data = await post_notification_send(body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "notification-svc unavailable"})
+
+
+@router.post("/decide")
+async def decide(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """HQ Decision 페이지 - 의사결정 1건 생성 (decision-svc /decide proxy)."""
+    sc, data = await post_decision_decide(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
 
 
 @router.get("/overview/{wh_id}")

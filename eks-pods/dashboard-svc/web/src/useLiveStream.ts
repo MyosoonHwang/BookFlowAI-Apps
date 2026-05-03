@@ -1,20 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { token, type Role } from './api';
+import { token, type Role } from './auth';
 
 export type LiveEvent = { ts: string; channel: string; data: unknown };
+export type WsStatus = 'connecting' | 'up' | 'down';
 
-export function useLiveStream(role: Role) {
+export function useLiveStream(role: Role | null) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
-  const [status, setStatus] = useState<'connecting' | 'up' | 'down'>('connecting');
+  const [status, setStatus] = useState<WsStatus>(role ? 'connecting' : 'down');
   const [counts, setCounts] = useState<Record<string, number>>({
-    'stock.changed': 0,
-    'order.pending': 0,
-    'spike.detected': 0,
-    'newbook.request': 0,
+    'stock.changed': 0, 'order.pending': 0, 'spike.detected': 0, 'newbook.request': 0,
   });
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
+    if (!role) { setStatus('down'); return; }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}/ws/updates`);
     wsRef.current = ws;
