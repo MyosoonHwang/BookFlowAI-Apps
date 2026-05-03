@@ -40,3 +40,27 @@ export const fetchPending = (role: Role, limit = 100) =>
     `/dashboard/pending?limit=${limit}`,
     role,
   );
+
+export type SaleRow = {
+  txn_id: string;
+  event_ts: string;
+  isbn13: string;
+  store_id: number;
+  channel: string;
+  qty: number;
+  revenue: number;
+};
+
+export const fetchRecentSales = (role: Role, limit = 20) =>
+  getJson<{ items: SaleRow[] }>(`/dashboard/recent-sales?limit=${limit}`, role);
+
+export type SalesSummary = {
+  window: string;
+  transactions: number;
+  total_revenue: number;
+  online_count: number;
+  offline_count: number;
+};
+
+export const fetchSalesSummary = (role: Role) =>
+  getJson<SalesSummary>('/dashboard/sales-summary', role);
