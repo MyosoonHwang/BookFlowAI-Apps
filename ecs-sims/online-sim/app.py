@@ -1,20 +1,38 @@
 """
 online-sim: 온라인 POS 판매 시뮬레이터 → Kinesis bookflow-pos-events
 채널: ONLINE_APP(70%) / ONLINE_WEB(30%), location_id 1-2
+
+ISBN 풀: BookFlowAI-Platform/seed-data/books.csv 알라딘 1000권 → seed=42 random.sample(1000).
+build.sh 가 _shared 모듈을 sim 이미지에 함께 COPY.
 """
-import json, os, random, time, uuid
+import json
+import logging
+import os
+import random
+import sys
+import time
+import uuid
 from datetime import datetime, timezone
+
 import boto3
+
+sys.path.insert(0, "/app")
+try:
+    from _shared.seed_isbns import SEED_ISBNS
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from _shared.seed_isbns import SEED_ISBNS
+
+log = logging.getLogger("online-sim")
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
+                    format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 STREAM_NAME = os.environ.get("KINESIS_STREAM_NAME", "bookflow-pos-events")
 REGION      = os.environ.get("AWS_REGION", "ap-northeast-1")
 INTERVAL    = (10, 30)   # 초
 
-ISBNS = [
-    "9788936434120","9791165341909","9788997253203","9788932919126","9788998441067",
-    "9791162540138","9788954657747","9788950949372","9788936433598","9791190030205",
-    "9788936472405","9788937460449","9788966261598","9791164054312","9788954647939",
-]
+_rng = random.Random(42)
+ISBNS = _rng.sample(SEED_ISBNS, min(1000, len(SEED_ISBNS)))
 
 kinesis = boto3.client("kinesis", region_name=REGION)
 
@@ -36,7 +54,7 @@ def make_record() -> dict:
 
 
 def main() -> None:
-    print(f"[online-sim] 시작 → stream={STREAM_NAME}", flush=True)
+    log.info("online-sim 시작 stream=%s pool=%d", STREAM_NAME, len(ISBNS))
     while True:
         rec = make_record()
         kinesis.put_record(
@@ -44,11 +62,8 @@ def main() -> None:
             Data=json.dumps(rec, ensure_ascii=False).encode(),
             PartitionKey=rec["isbn13"],
         )
-        print(
-            f"[online-sim] {rec['channel']} isbn={rec['isbn13']} "
-            f"qty={rec['qty']} price={rec['total_price']}",
-            flush=True,
-        )
+        log.info("%s isbn=%s qty=%s price=%s",
+                 rec["channel"], rec["isbn13"], rec["qty"], rec["total_price"])
         time.sleep(random.uniform(*INTERVAL))
 
 
