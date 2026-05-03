@@ -17,7 +17,9 @@ from ..clients import (
     get_warehouse_inventory,
     post_decision_decide,
     post_intervention_approve,
+    post_intervention_new_book_approve,
     post_intervention_reject,
+    post_intervention_returns_approve,
     post_notification_send,
 )
 
@@ -41,10 +43,20 @@ async def forecast(store_id: int, snapshot_date: date, ctx: AuthContext = Depend
 
 
 @router.get("/pending")
-async def pending(ctx: AuthContext = Depends(require_auth), limit: int = 50) -> Any:
-    data = await get_pending_orders(ctx.token, limit=limit)
+async def pending(
+    ctx: AuthContext = Depends(require_auth),
+    limit: int = 50,
+    order_type: str | None = None,
+    wh_id: int | None = None,
+) -> Any:
+    """V6.2 3-stage 의사결정 PENDING 큐.
+
+    intervention-svc 가 role/scope 자동 적용 (wh-manager 는 자기 wh 만, hq-admin 은 옵션 wh_id).
+    `order_type`: REBALANCE | WH_TRANSFER | PUBLISHER_ORDER 필터.
+    """
+    data = await get_pending_orders(ctx.token, limit=limit, order_type=order_type, wh_id=wh_id)
     if data is None:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="decision-svc unavailable")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="intervention-svc unavailable")
     return data
 
 
@@ -86,9 +98,23 @@ async def notify_send(body: dict = Body(...), ctx: AuthContext = Depends(require
 
 @router.post("/decide")
 async def decide(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
-    """HQ Decision 페이지 - 의사결정 1건 생성 (decision-svc /decide proxy)."""
+    """HQ Decision 페이지 - 의사결정 1건 생성 (decision-svc /decide proxy · 3-stage cascade)."""
     sc, data = await post_decision_decide(body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
+
+
+@router.post("/returns/approve")
+async def returns_approve(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """반품 승인 (intervention-svc /intervention/returns/approve proxy)."""
+    sc, data = await post_intervention_returns_approve(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/new-book-requests/{request_id}/approve")
+async def new_book_approve(request_id: int, ctx: AuthContext = Depends(require_auth)):
+    """신간 신청 승인 (intervention-svc /intervention/new-book-requests/{id}/approve proxy)."""
+    sc, data = await post_intervention_new_book_approve(request_id, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
 
 
 @router.get("/overview/{wh_id}")
