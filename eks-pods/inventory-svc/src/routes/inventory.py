@@ -24,6 +24,47 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 REDIS_CHANNEL_STOCK = "stock.changed"
 
 
+def _check_inventory_write_perm(cur, ctx: AuthContext, location_id: int) -> None:
+    """Inventory mutation 권한 검증 (FR-A6.6 + 권한 매트릭스).
+
+    사용자 결정 (2026-05-03 · `project_authority_clarifications`):
+    - hq-admin: 모든 location OK (전권)
+    - wh-manager: 자기 wh 의 location 만 OK (locations.wh_id == scope_wh_id)
+    - branch-clerk: 자기 매장만 OK (scope_store_id == location_id) — FR 매트릭스 '지점 실행' 정합
+    - 그 외: 403
+
+    Raises HTTPException 403/404 on violation.
+    """
+    if ctx.role == "hq-admin":
+        return
+
+    if ctx.role == "wh-manager":
+        if ctx.scope_wh_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="wh-manager scope_wh_id 부재 (인증 토큰 손상)")
+        cur.execute("SELECT wh_id FROM locations WHERE location_id = %s", (location_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"location_id {location_id} not found")
+        if row[0] != ctx.scope_wh_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"자기 권역만 inventory 변경 가능 (scope_wh_id={ctx.scope_wh_id} · location wh_id={row[0]})")
+        return
+
+    if ctx.role == "branch-clerk":
+        if ctx.scope_store_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="branch-clerk scope_store_id 부재 (인증 토큰 손상)")
+        if ctx.scope_store_id != location_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"자기 매장만 inventory 변경 가능 (scope_store_id={ctx.scope_store_id} · location_id={location_id})")
+        return
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"role '{ctx.role}' 는 inventory 변경 권한 없음")
+
+
 @router.get("/current/{wh_id}", response_model=WarehouseInventoryResponse)
 def get_warehouse_inventory(wh_id: int, ctx: AuthContext = Depends(require_auth)):
     if ctx.role == "wh-manager" and ctx.scope_wh_id is not None and ctx.scope_wh_id != wh_id:
@@ -58,10 +99,13 @@ def get_warehouse_inventory(wh_id: int, ctx: AuthContext = Depends(require_auth)
 
 @router.post("/adjust", response_model=AdjustResponse)
 def adjust(req: AdjustRequest, ctx: AuthContext = Depends(require_auth)):
-    """Atomic on_hand adjust + audit_log + Redis publish stock.changed."""
-    if ctx.role == "branch-clerk":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="branch-clerk cannot adjust inventory")
+    """Atomic on_hand adjust + audit_log + Redis publish stock.changed.
 
+    권한 (FR-A6.6 + 사용자 결정 2026-05-03):
+    - hq-admin: 전권
+    - wh-manager: 자기 wh location 만
+    - branch-clerk: 자기 매장만 (분실/파손/도난 등 매장 사정 직접 처리)
+    """
     update_sql = """
         UPDATE inventory
            SET on_hand = on_hand + %s,
@@ -76,6 +120,7 @@ def adjust(req: AdjustRequest, ctx: AuthContext = Depends(require_auth)):
     """
     with db_conn() as conn:
         with conn.cursor() as cur:
+            _check_inventory_write_perm(cur, ctx, req.location_id)
             cur.execute(update_sql, (req.delta, ctx.user_id, req.isbn13, req.location_id, req.delta))
             row = cur.fetchone()
             if row is None:
