@@ -1,4 +1,7 @@
-"""env-driven config (DASHBOARD_ prefix). No RDS direct - fan-in via HTTP."""
+"""env-driven config (DASHBOARD_ prefix).
+
+5-pod fan-in via HTTP + WebSocket broker (Redis pub/sub) + direct RDS read for master tables.
+"""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +16,14 @@ class Settings(BaseSettings):
 
     redis_host: str
     redis_port: int = 6379
+
+    # Direct RDS read for master tables (sales_realtime · books · kpi_daily)
+    # per .pen Service Mesh - dashboard_svc role has SELECT only.
+    rds_host: str = ""
+    rds_port: int = 5432
+    rds_db: str = "bookflow"
+    rds_user: str = "dashboard_svc"
+    rds_password: str = ""
 
     auth_mode: str = "mock"
     log_level: str = "INFO"

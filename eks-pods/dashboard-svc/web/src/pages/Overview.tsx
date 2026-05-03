@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, useOutletContext } from 'react-router-dom';
-import { fetchOverview, type Role } from '../api';
+import { fetchOverview, fetchRecentSales, fetchSalesSummary, type Role } from '../api';
 
 export default function Overview() {
   const { wh } = useParams();
@@ -13,10 +13,22 @@ export default function Overview() {
     refetchInterval: 5_000,
   });
 
+  const sales = useQuery({
+    queryKey: ['recent-sales', role],
+    queryFn: () => fetchRecentSales(role, 15),
+    refetchInterval: 3_000,
+  });
+
+  const summary = useQuery({
+    queryKey: ['sales-summary', role],
+    queryFn: () => fetchSalesSummary(role),
+    refetchInterval: 5_000,
+  });
+
   return (
     <div className="flex flex-col gap-3">
       <div className="panel">
-        <h3 className="h3-tag">Overview · WH {whId}</h3>
+        <h3 className="h3-tag">5-pod fan-in · WH {whId}</h3>
         {q.isLoading && <div className="text-gh-muted text-xs">loading…</div>}
         {q.error && <div className="text-gh-red text-xs">error: {String(q.error)}</div>}
         {q.data && (
@@ -51,7 +63,7 @@ export default function Overview() {
             </div>
             {q.data._partial_failures.length > 0 && (
               <div className="mt-2 text-[11px] text-gh-muted">
-                미응답 pod: <span className="text-gh-orange">{q.data._partial_failures.join(', ')}</span> (Phase 3 까지 미배포 · _safe_get None tolerated)
+                미응답 pod: <span className="text-gh-orange">{q.data._partial_failures.join(', ')}</span>
               </div>
             )}
           </>
@@ -59,7 +71,66 @@ export default function Overview() {
       </div>
 
       <div className="panel">
-        <h3 className="h3-tag">Pending orders preview <span className="text-gh-muted normal-case">(top 10 · 5s polling)</span></h3>
+        <h3 className="h3-tag">
+          POS Sales (1h) <span className="text-gh-muted normal-case">(direct RDS read · 5s polling)</span>
+        </h3>
+        {summary.data && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="metric">
+              <div className="metric-label">transactions / 1h</div>
+              <div className="metric-value">{summary.data.transactions}</div>
+            </div>
+            <div className="metric">
+              <div className="metric-label">revenue / 1h</div>
+              <div className="metric-value">{summary.data.total_revenue.toLocaleString()}</div>
+            </div>
+            <div className="metric">
+              <div className="metric-label">online</div>
+              <div className="metric-value">{summary.data.online_count}</div>
+            </div>
+            <div className="metric">
+              <div className="metric-label">offline</div>
+              <div className="metric-value">{summary.data.offline_count}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <h3 className="h3-tag">
+          Recent POS transactions <span className="text-gh-muted normal-case">(pos-ingestor Lambda · 3s polling)</span>
+        </h3>
+        {sales.isLoading && <div className="text-gh-muted text-xs">loading…</div>}
+        {sales.data?.items && (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gh-muted text-[10px] uppercase">
+                <th className="text-left py-1">event_ts</th>
+                <th className="text-left py-1">isbn13</th>
+                <th className="text-left py-1">store</th>
+                <th className="text-left py-1">channel</th>
+                <th className="text-left py-1">qty</th>
+                <th className="text-left py-1">revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sales.data.items.map((s) => (
+                <tr key={s.txn_id} className="border-t border-gh-border">
+                  <td className="py-1 text-gh-muted">{new Date(s.event_ts).toLocaleTimeString()}</td>
+                  <td className="py-1">{s.isbn13}</td>
+                  <td className="py-1">{s.store_id}</td>
+                  <td className="py-1 text-gh-blue">{s.channel}</td>
+                  <td className="py-1">{s.qty}</td>
+                  <td className="py-1">{s.revenue.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="panel">
+        <h3 className="h3-tag">Pending orders <span className="text-gh-muted normal-case">(decision-svc · 5s polling)</span></h3>
         <table className="w-full text-xs">
           <thead>
             <tr className="text-gh-muted text-[10px] uppercase">

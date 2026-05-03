@@ -28,6 +28,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: dashboard-svc-env
+            - secretRef:
+                name: dashboard-svc-secret
           resources:
             requests:
               cpu: 100m
