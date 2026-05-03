@@ -108,17 +108,35 @@ def test_wh_transfer_with_final_side_400():
     assert e.value.status_code == 400
 
 
-# ─── PUBLISHER_ORDER (FINAL only · hq-admin only) ─────────────────────────
+# ─── PUBLISHER_ORDER (FINAL only · hq-admin OR wh-manager 자기 권역) ──────
+# 사용자 결정 2026-05-03: 물류센터가 발주 주체. wh-manager 자기 권역 PUBLISHER_ORDER 승인 가능.
+# (메모리: project_authority_clarifications_2026_05_03.md)
 def test_publisher_order_hq_admin_ok():
     cur = _cur("PUBLISHER_ORDER", None, 3, {3: 1})
     ot, *_ = _validate_authority(cur, _ctx("hq-admin"), "x", "FINAL")
     assert ot == "PUBLISHER_ORDER"
 
 
-def test_publisher_order_wh_manager_403():
+def test_publisher_order_wh_manager_own_wh_ok():
+    """wh-manager-1 이 target_wh=1 인 PUBLISHER_ORDER 승인 가능."""
+    cur = _cur("PUBLISHER_ORDER", None, 3, {3: 1})
+    ot, *_ = _validate_authority(cur, _ctx("wh-manager", 1), "x", "FINAL")
+    assert ot == "PUBLISHER_ORDER"
+
+
+def test_publisher_order_wh_manager_other_wh_403():
+    """wh-manager-2 가 target_wh=1 인 PUBLISHER_ORDER 거절."""
     cur = _cur("PUBLISHER_ORDER", None, 3, {3: 1})
     with pytest.raises(HTTPException) as e:
-        _validate_authority(cur, _ctx("wh-manager", 1), "x", "FINAL")
+        _validate_authority(cur, _ctx("wh-manager", 2), "x", "FINAL")
+    assert e.value.status_code == 403
+
+
+def test_publisher_order_branch_clerk_403():
+    """branch-clerk 는 PUBLISHER_ORDER 절대 승인 불가."""
+    cur = _cur("PUBLISHER_ORDER", None, 3, {3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("branch-clerk"), "x", "FINAL")
     assert e.value.status_code == 403
 
 

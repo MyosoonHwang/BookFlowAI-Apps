@@ -128,12 +128,19 @@ def _validate_authority(cur, ctx: AuthContext, order_id: str, side: str) -> tupl
                                 detail=f"{side} 사이드 권한 없음 (scope wh_id={ctx.scope_wh_id} · {side} wh_id={my_side_wh})")
 
     elif order_type == "PUBLISHER_ORDER":
+        # 사용자 결정 2026-05-03: 물류센터가 발주 주체. wh-manager 자기 권역 OK.
         if side != "FINAL":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="PUBLISHER_ORDER 는 approval_side='FINAL' 만 허용")
-        if ctx.role != "hq-admin":
+        if ctx.role == "hq-admin":
+            return order_type, source_wh, target_wh
+        if ctx.role == "wh-manager" and ctx.scope_wh_id is not None:
+            if ctx.scope_wh_id == target_wh:
+                return order_type, source_wh, target_wh
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="PUBLISHER_ORDER 는 hq-admin 만 승인 가능 (외부 발주 비용)")
+                                detail=f"PUBLISHER_ORDER 자기 권역만 승인 가능 (scope_wh_id={ctx.scope_wh_id} · target_wh={target_wh})")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="PUBLISHER_ORDER 는 hq-admin 또는 자기 권역 wh-manager 만 승인 가능")
 
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
