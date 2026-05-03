@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchInstructions, type Role } from '../api';
+import { ko, ORDER_TYPE_KO, URGENCY_KO } from '../labels';
 
 export default function BranchInbound() {
   const { role } = useOutletContext<{ role: Role }>();
@@ -22,7 +23,6 @@ export default function BranchInbound() {
       <div className="card">
         <div className="flex items-center justify-between mb-3">
           <h2 className="h2">입고 대기 ({myInbound.length})</h2>
-          <span className="label-tag">target_location_id = {my_store}</span>
         </div>
         <table className="data-table">
           <thead>
@@ -41,19 +41,19 @@ export default function BranchInbound() {
             {myInbound.map((o) => (
               <tr key={o.order_id}>
                 <td className="text-bf-muted">{o.approved_at ? new Date(o.approved_at).toLocaleString() : '-'}</td>
-                <td className="font-mono">{o.order_type}</td>
+                <td>{ko(ORDER_TYPE_KO, o.order_type)}</td>
                 <td>
                   <span className={
                     o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
                     o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
-                  }>{o.urgency_level}</span>
+                  }>{ko(URGENCY_KO, o.urgency_level)}</span>
                 </td>
                 <td className="font-mono text-[11px]">{o.isbn13}</td>
                 <td>{o.title ?? '-'}</td>
                 <td>위치 {o.source_location_id ?? '-'}</td>
-                <td className="text-right">{o.qty}</td>
+                <td className="text-right">{o.qty}권</td>
                 <td className="text-right">
-                  <button className="btn-primary btn-sm" onClick={() => alert('Phase 4: inventory-svc /adjust 프록시 추가 후 활성화')}>
+                  <button className="btn-primary btn-sm" onClick={() => alert('수령 처리는 다음 단계에서 활성화 예정')}>
                     수령
                   </button>
                 </td>

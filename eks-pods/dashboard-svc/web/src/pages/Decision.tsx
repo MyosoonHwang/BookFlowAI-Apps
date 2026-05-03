@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchPending, postDecide, type DecideResult, type Role } from '../api';
+import { ko, ORDER_TYPE_KO, URGENCY_KO } from '../labels';
 
 const LOCATIONS = [
   { id: 3, name: '강남점 (수도권)' },
@@ -84,14 +85,14 @@ export default function Decision() {
                     <span className={
                       o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
                       o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
-                    }>{o.urgency_level}</span>
+                    }>{ko(URGENCY_KO, o.urgency_level)}</span>
                   </td>
-                  <td className="font-mono">{o.order_type}</td>
+                  <td>{ko(ORDER_TYPE_KO, o.order_type)}</td>
                   <td className="font-mono text-[11px]">{o.isbn13}</td>
                   <td>{o.source_location_id ?? '-'} → {o.target_location_id ?? '-'}</td>
-                  <td>{o.qty}</td>
+                  <td>{o.qty}권</td>
                   <td className="text-bf-muted">-</td>
-                  <td className="text-bf-muted">{new Date(o.created_at).toLocaleString()}</td>
+                  <td className="text-bf-muted">{new Date(o.created_at).toLocaleString('ko-KR')}</td>
                 </tr>
               ))}
             </tbody>
@@ -147,7 +148,7 @@ export default function Decision() {
               disabled={!form.isbn13 || decide.isPending}
               onClick={() => decide.mutate()}
             >
-              {decide.isPending ? '결정 중…' : 'Cascade 시도'}
+              {decide.isPending ? '결정 중…' : '3단계 의사결정 시작'}
             </button>
           </div>
         </div>
@@ -161,15 +162,15 @@ export default function Decision() {
               </div>
               <div className="text-bf-muted">{STAGE_LABEL[result.stage].desc}</div>
               <hr className="border-bf-border2" />
-              <div><span className="label-tag">order_type</span> <span className="font-mono ml-2">{result.order_type}</span></div>
-              <div><span className="label-tag">긴급도</span> <span className="ml-2">{result.urgency_level}</span></div>
+              <div><span className="label-tag">유형</span> <span className="ml-2">{ko(ORDER_TYPE_KO, result.order_type)}</span></div>
+              <div><span className="label-tag">긴급도</span> <span className="ml-2">{ko(URGENCY_KO, result.urgency_level)}</span></div>
               <div><span className="label-tag">자동 실행 조건</span> <span className="ml-2">{result.auto_execute_eligible ? '✓ 충족' : '× 미충족'}</span></div>
-              <div><span className="label-tag">출발</span> <span className="ml-2">{result.source_location_id ?? '(외부 발주)'}</span></div>
+              <div><span className="label-tag">출발</span> <span className="ml-2">{result.source_location_id ?? '(출판사)'}</span></div>
               <div><span className="label-tag">도착</span> <span className="ml-2">{result.target_location_id}</span></div>
-              <div><span className="label-tag">order_id</span> <span className="font-mono text-[10px] ml-2 text-bf-muted">{result.order_id}</span></div>
+              <div><span className="label-tag">주문 ID</span> <span className="font-mono text-[10px] ml-2 text-bf-muted">{result.order_id}</span></div>
               <hr className="border-bf-border2" />
               <details>
-                <summary className="cursor-pointer text-bf-muted">rationale (forecast_cache 기반)</summary>
+                <summary className="cursor-pointer text-bf-muted">의사결정 근거 (수요 예측 기반)</summary>
                 <pre className="mt-2 text-[10px] bg-bf-panel2 p-2 rounded overflow-x-auto">
 {JSON.stringify(result.rationale, null, 2)}
                 </pre>

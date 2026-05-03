@@ -105,9 +105,32 @@ async def post_intervention_returns_approve(body: dict, token: str) -> tuple[int
     return await _safe_post(f"{settings.intervention_svc_url}/intervention/returns/approve", body, token)
 
 
-async def post_intervention_new_book_approve(request_id: int, token: str) -> tuple[int, Any]:
+async def post_intervention_new_book_approve(
+    request_id: int, body: dict, token: str
+) -> tuple[int, Any]:
+    """body = { wh1_qty?: int, wh2_qty?: int }"""
     return await _safe_post(
         f"{settings.intervention_svc_url}/intervention/new-book-requests/{request_id}/approve",
-        {},
+        body or {},
+        token,
+    )
+
+
+async def post_intervention_new_book_reject(
+    request_id: int, body: dict, token: str
+) -> tuple[int, Any]:
+    """body = { reason?: str }"""
+    return await _safe_post(
+        f"{settings.intervention_svc_url}/intervention/new-book-requests/{request_id}/reject",
+        body or {},
+        token,
+    )
+
+
+async def post_intervention_book_status(isbn13: str, body: dict, token: str) -> tuple[int, Any]:
+    """HQ 도서 ON/OFF + 소진 모드 (intervention-svc /intervention/books/{isbn13}/status)."""
+    return await _safe_post(
+        f"{settings.intervention_svc_url}/intervention/books/{isbn13}/status",
+        body,
         token,
     )

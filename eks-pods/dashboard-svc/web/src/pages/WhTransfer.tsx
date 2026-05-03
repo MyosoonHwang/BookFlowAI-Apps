@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchPending, type Role } from '../api';
+import { ko, ORDER_STATUS_KO, URGENCY_KO, whName } from '../labels';
 
 /**
  * 권역 이동 - 2단계 SOURCE/TARGET 이중 승인 시나리오 (.pen C-1~C-4).
@@ -22,17 +23,17 @@ export default function WhTransfer() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">권역 이동 · 창고 {wh}</h1>
+        <h1 className="h1">권역 이동 · {whName(wh)} 권역</h1>
         <p className="text-bf-muted text-xs mt-1">
-          창고 간 재고 이동 - SOURCE 창고 발의 → TARGET 창고 수락 (2단계 이중 승인)
+          창고 간 재고 이동 — 출고측 창고가 먼저 발의하고 입고측 창고가 수락해야 운송됩니다 (양쪽 승인 필요)
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="h2">출고 발의 ({outbound.length})</h2>
-            <span className="label-tag">SOURCE 발의 → 상대 창고 수락 대기</span>
+            <h2 className="h2">우리 창고가 보낼 항목 ({outbound.length})</h2>
+            <span className="text-[10px] text-bf-muted">상대 창고 수락 대기</span>
           </div>
           <table className="data-table">
             <thead>
@@ -45,16 +46,16 @@ export default function WhTransfer() {
                     <span className={
                       o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
                       o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
-                    }>{o.urgency_level}</span>
+                    }>{ko(URGENCY_KO, o.urgency_level)}</span>
                   </td>
                   <td className="font-mono text-[11px]">{o.isbn13}</td>
                   <td>{o.source_location_id ?? '-'} → {o.target_location_id ?? '-'}</td>
-                  <td className="text-right">{o.qty}</td>
+                  <td className="text-right">{o.qty}권</td>
                   <td>
                     <span className={
                       o.status === 'APPROVED' ? 'pill-approved' :
                       o.status === 'REJECTED' ? 'pill-rejected' : 'pill-pending'
-                    }>{o.status}</span>
+                    }>{ko(ORDER_STATUS_KO, o.status)}</span>
                   </td>
                 </tr>
               ))}
@@ -67,8 +68,8 @@ export default function WhTransfer() {
 
         <div className="card">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="h2">입고 수락 대기 ({inbound.length})</h2>
-            <span className="label-tag">TARGET 수락 → 운송 시작</span>
+            <h2 className="h2">우리 창고가 받을 항목 ({inbound.length})</h2>
+            <span className="text-[10px] text-bf-muted">수락하면 운송 시작</span>
           </div>
           <table className="data-table">
             <thead>
@@ -81,16 +82,16 @@ export default function WhTransfer() {
                     <span className={
                       o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
                       o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
-                    }>{o.urgency_level}</span>
+                    }>{ko(URGENCY_KO, o.urgency_level)}</span>
                   </td>
                   <td className="font-mono text-[11px]">{o.isbn13}</td>
                   <td>{o.source_location_id ?? '-'} → {o.target_location_id ?? '-'}</td>
-                  <td className="text-right">{o.qty}</td>
+                  <td className="text-right">{o.qty}권</td>
                   <td>
                     <span className={
                       o.status === 'APPROVED' ? 'pill-approved' :
                       o.status === 'REJECTED' ? 'pill-rejected' : 'pill-pending'
-                    }>{o.status}</span>
+                    }>{ko(ORDER_STATUS_KO, o.status)}</span>
                   </td>
                 </tr>
               ))}
@@ -99,14 +100,6 @@ export default function WhTransfer() {
               )}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      <div className="card-tight bg-bf-warnbg border-bf-warn">
-        <div className="text-xs text-bf-warn font-semibold mb-1">Phase 4 예정</div>
-        <div className="text-xs text-bf-text2">
-          신규 발의 폼 + 수락/거절 버튼은 transfer_requests 테이블 + intervention-svc 의 SOURCE/TARGET 2단계 approval_side 추가 후 활성화.
-          현재는 decision-svc 의 WH_TRANSFER 타입 pending_orders 가 동일 의미로 작동.
         </div>
       </div>
     </div>

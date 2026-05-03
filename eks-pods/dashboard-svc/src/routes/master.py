@@ -77,18 +77,42 @@ def books(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     q: str = Query(default=""),
+    status: str = Query(default="ACTIVE", description="ACTIVE | SOFT_DC | INACTIVE | ALL"),
+    category: str = Query(default=""),
 ):
-    """books 카탈로그 (1000책) - HQ Books 페이지."""
-    where = "WHERE active = TRUE"
+    """books 카탈로그 (1000책) - HQ Books 페이지.
+
+    status:
+      - ACTIVE   = active=TRUE 만 (기본 · 판매중 + 소진모드 모두 포함)
+      - SOFT_DC  = discontinue_mode='SOFT_DISCONTINUE' (소진 모드)
+      - INACTIVE = active=FALSE (자동 사이클 정지)
+      - ALL      = 필터 없음
+    """
+    clauses: list[str] = []
     params: list = []
+
+    if status == "ACTIVE":
+        clauses.append("active = TRUE")
+    elif status == "SOFT_DC":
+        clauses.append("discontinue_mode = 'SOFT_DISCONTINUE'")
+    elif status == "INACTIVE":
+        clauses.append("active = FALSE")
+    # ALL = no filter
+
     if q:
-        where += " AND (title ILIKE %s OR author ILIKE %s OR isbn13 = %s)"
+        clauses.append("(title ILIKE %s OR author ILIKE %s OR isbn13 = %s)")
         params.extend([f"%{q}%", f"%{q}%", q])
-    params.extend([limit, offset])
+    if category:
+        clauses.append("category_name = %s")
+        params.append(category)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params_with_paging = params + [limit, offset]
 
     sql = f"""
         SELECT isbn13, title, author, publisher, pub_date, category_name,
-               price_standard, price_sales, discontinue_mode, expected_soldout_at
+               price_standard, price_sales, active, discontinue_mode,
+               discontinue_reason, discontinue_at, expected_soldout_at
           FROM books
           {where}
          ORDER BY isbn13
@@ -96,9 +120,9 @@ def books(
     """
     count_sql = f"SELECT count(*) FROM books {where}"
     with db_conn() as conn, conn.cursor() as cur:
-        cur.execute(count_sql, params[:-2])
+        cur.execute(count_sql, params)
         total = cur.fetchone()[0]
-        cur.execute(sql, params)
+        cur.execute(sql, params_with_paging)
         rows = cur.fetchall()
 
     return {
@@ -111,8 +135,56 @@ def books(
                 "pub_date": r[4].isoformat() if r[4] else None,
                 "category": r[5],
                 "price_standard": r[6], "price_sales": r[7],
-                "discontinue_mode": r[8],
-                "expected_soldout_at": r[9].isoformat() if r[9] else None,
+                "active": r[8],
+                "discontinue_mode": r[9],
+                "discontinue_reason": r[10],
+                "discontinue_at": r[11].isoformat() if r[11] else None,
+                "expected_soldout_at": r[12].isoformat() if r[12] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/books/categories")
+def book_categories(_: AuthContext = Depends(require_auth)):
+    """books 카테고리 distinct 리스트 - 필터 드롭다운용."""
+    sql = """
+        SELECT category_name, count(*) AS n
+          FROM books
+         WHERE category_name IS NOT NULL
+         GROUP BY category_name
+         ORDER BY n DESC
+         LIMIT 50
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    return {"items": [{"category": r[0], "count": r[1]} for r in rows]}
+
+
+@router.get("/books/{isbn13}/audit")
+def book_audit(isbn13: str, _: AuthContext = Depends(require_auth)):
+    """도서 변경 이력 - audit_log 에서 entity_type='books' AND entity_id=isbn13."""
+    sql = """
+        SELECT log_id, ts, actor_id, action, after_state
+          FROM audit_log
+         WHERE entity_type = 'books' AND entity_id = %s
+         ORDER BY ts DESC
+         LIMIT 50
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (isbn13,))
+        rows = cur.fetchall()
+    return {
+        "isbn13": isbn13,
+        "items": [
+            {
+                "log_id":      r[0],
+                "ts":          r[1].isoformat() if r[1] else None,
+                "actor_id":    str(r[2]) if r[2] else None,
+                "action":      r[3],
+                "after_state": r[4],
             }
             for r in rows
         ],
@@ -196,27 +268,102 @@ def returns(
     }
 
 
+def compute_wh_split(wh_counts: dict, default_qty: int) -> dict:
+    """카테고리 sales 권역별 카운트 → wh1/wh2 분배 수량 + 비율.
+
+    wh_counts: {wh_id: count} - sales_realtime 14일치 카운트.
+                None/wh_id != 1,2 키는 무시.
+    default_qty: 총 발주 수량 (사용자가 폼에서 수정 가능, 합산은 100% 유지).
+
+    Returns:
+      { wh1_qty, wh2_qty, wh1_pct, wh2_pct, source: 'category'|'fallback' }
+
+    데이터 없으면 60/40 fallback (수도권 우세 휴리스틱).
+    """
+    n1 = wh_counts.get(1, 0) or 0
+    n2 = wh_counts.get(2, 0) or 0
+    total = n1 + n2
+    if total == 0:
+        return {
+            "wh1_qty": int(round(default_qty * 0.6)),
+            "wh2_qty": int(round(default_qty * 0.4)),
+            "wh1_pct": 60,
+            "wh2_pct": 40,
+            "source": "fallback",
+        }
+    wh1_pct = int(round(100 * n1 / total))
+    wh2_pct = 100 - wh1_pct
+    return {
+        "wh1_qty": int(round(default_qty * wh1_pct / 100)),
+        "wh2_qty": int(round(default_qty * wh2_pct / 100)),
+        "wh1_pct": wh1_pct,
+        "wh2_pct": wh2_pct,
+        "source": "category",
+    }
+
+
+@router.get("/new-book-requests/{request_id}/forecast-hint")
+def new_book_forecast_hint(
+    request_id: int,
+    _: AuthContext = Depends(require_auth),
+    default_qty: int = Query(default=100, ge=10, le=10000),
+):
+    """UX-2 신간 편입 결정 - 권역별 분배 추천.
+
+    같은 카테고리 최근 14일 매출의 권역별 비율로 wh1/wh2 수량 prefill.
+    데이터 없으면 60/40 fallback (수도권 우세).
+
+    .pen 'HQ Requests' 우측 패널의 'AI 정책별 결과' Bar chart 데이터 소스.
+    """
+    sql = """
+        WITH req AS (
+            SELECT nbr.id, nbr.isbn13, b.category_name
+              FROM new_book_requests nbr
+              LEFT JOIN books b ON b.isbn13 = nbr.isbn13
+             WHERE nbr.id = %s
+        )
+        SELECT l.wh_id, COUNT(*) AS n
+          FROM sales_realtime s
+          JOIN books b ON b.isbn13 = s.isbn13
+          JOIN locations l ON l.location_id = s.store_id
+          JOIN req ON b.category_name = req.category_name
+         WHERE s.event_ts > NOW() - INTERVAL '14 days'
+           AND l.wh_id IS NOT NULL
+         GROUP BY l.wh_id
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (request_id,))
+        rows = cur.fetchall()
+
+    wh_counts = {r[0]: r[1] for r in rows}
+    split = compute_wh_split(wh_counts, default_qty)
+    return {
+        "request_id": request_id,
+        "default_qty": default_qty,
+        **split,
+        "raw_counts": [{"wh_id": k, "n": v} for k, v in wh_counts.items() if k in (1, 2)],
+    }
+
+
 @router.get("/new-book-requests")
 def new_book_requests(
     _: AuthContext = Depends(require_auth),
     limit: int = Query(default=50, ge=1, le=500),
 ):
-    """new_book_requests (HQ Requests · 출판사 신간 신청 큐)."""
+    """new_book_requests (HQ Requests · 출판사 신간 신청 큐).
+
+    실제 스키마는 created_at (DDL 문서는 requested_at 이지만 시드 적재 시 created_at 으로 적재됨).
+    프론트 호환 위해 SQL alias 로 requested_at 노출.
+    """
     sql = """
-        SELECT id, isbn13, publisher_id, title, status, requested_at, fetched_at, approved_at
+        SELECT id, isbn13, publisher_id, title, status,
+               created_at AS requested_at, fetched_at, approved_at
           FROM new_book_requests
-         ORDER BY requested_at DESC
+         ORDER BY created_at DESC
          LIMIT %s
     """
     with db_conn() as conn, conn.cursor() as cur:
-        try:
-            cur.execute(sql, (limit,))
-        except Exception:
-            # fallback if some columns missing in schema variant
-            cur.execute(
-                "SELECT id, isbn13, publisher_id, title, status, requested_at FROM new_book_requests ORDER BY requested_at DESC LIMIT %s",
-                (limit,),
-            )
+        cur.execute(sql, (limit,))
         rows = cur.fetchall()
 
     return {
