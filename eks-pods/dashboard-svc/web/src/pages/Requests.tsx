@@ -15,13 +15,21 @@ import { roleGroup } from '../auth';
 type StatusTab = 'NEW' | 'REVIEWING' | 'APPROVED' | 'REJECTED';
 
 const TABS: { key: StatusTab; label: string; hint: string }[] = [
-  { key: 'NEW',       label: 'NEW',       hint: '출판사 신간 신청 도착 직후' },
-  { key: 'REVIEWING', label: 'REVIEWING', hint: '본사가 검토 중 (FETCHED)' },
-  { key: 'APPROVED',  label: 'APPROVED',  hint: '편입 결정 완료' },
-  { key: 'REJECTED',  label: 'REJECTED',  hint: '편입 거절' },
+  { key: 'NEW',       label: '신규',     hint: '출판사 신간 신청 도착 직후' },
+  { key: 'REVIEWING', label: '검토중',   hint: '본사가 자료 확인 중' },
+  { key: 'APPROVED',  label: '편입완료', hint: '본사 편입 결정 + 발주 지시서 발송 완료' },
+  { key: 'REJECTED',  label: '거절',     hint: '본사가 편입 거절' },
 ];
 
-// new_book_requests.status 값 매핑 - 'FETCHED' 도 REVIEWING 탭으로 묶어 표시.
+// DB status → 한글 라벨
+const STATUS_KO: Record<string, string> = {
+  NEW: '신규',
+  FETCHED: '검토중',
+  APPROVED: '편입완료',
+  REJECTED: '거절',
+};
+
+// new_book_requests.status 값 매핑 - 'FETCHED' 도 검토중 탭으로 묶어 표시.
 function bucketOf(status: string): StatusTab {
   if (status === 'NEW')      return 'NEW';
   if (status === 'FETCHED')  return 'REVIEWING';
@@ -35,7 +43,7 @@ function StatusPill({ status }: { status: string }) {
     status === 'APPROVED' ? 'pill-approved' :
     status === 'REJECTED' ? 'pill-rejected' :
     status === 'FETCHED'  ? 'pill-info'     : 'pill-pending';
-  return <span className={cls}>{status}</span>;
+  return <span className={cls}>{STATUS_KO[status] ?? status}</span>;
 }
 
 export default function Requests() {
@@ -68,8 +76,8 @@ export default function Requests() {
       <div>
         <h1 className="h1">출판사 신간 요청 수신함</h1>
         <p className="text-bf-muted text-xs mt-1">
-          publisher-watcher (1분 폴링) → new_book_requests · 본사 단독 결정 ·{' '}
-          <b>편입 시 양쪽 권역에 발주 지시서(PUBLISHER_ORDER) 자동 생성</b>
+          출판사가 신청한 신간을 본사가 검토하고 시스템 편입 여부를 결정합니다 ·{' '}
+          <b>편입 시 양쪽 권역(수도권·영남)에 출판사 발주 지시서가 자동 생성됩니다</b>
         </p>
       </div>
 
@@ -114,8 +122,8 @@ export default function Requests() {
                       이 탭에 요청 없음
                     </div>
                     <div className="text-[11px]">
-                      {tab === 'NEW' && '출판사가 새 신청을 보내면 여기에 표시됩니다 (publisher-watcher 1분 주기).'}
-                      {tab === 'REVIEWING' && 'NEW → FETCHED 로 전환된 요청만 표시됩니다.'}
+                      {tab === 'NEW' && '출판사가 새 신청을 보내면 여기에 표시됩니다 (1분 주기 갱신).'}
+                      {tab === 'REVIEWING' && '본사가 자료를 확인 중인 요청만 표시됩니다.'}
                       {tab === 'APPROVED' && '본사가 편입 결정한 요청 + 권역별 발주 수량.'}
                       {tab === 'REJECTED' && '본사가 거절한 요청 + 사유.'}
                     </div>
@@ -198,7 +206,7 @@ function DetailPanel({
     mutationFn: () =>
       postNewBookApprove(role, req.id, { wh1_qty: wh1 ?? 0, wh2_qty: wh2 ?? 0 }),
     onSuccess: (d) => {
-      setFeedback(`✓ 편입 결정 완료 · 발주 지시서 ${d.orders.length}건 생성 (WH-1: ${d.wh1_qty} · WH-2: ${d.wh2_qty})`);
+      setFeedback(`✓ 편입 결정 완료 · 발주 지시서 ${d.orders.length}건 생성 (수도권 ${d.wh1_qty}권 · 영남 ${d.wh2_qty}권)`);
       qc.invalidateQueries({ queryKey: ['requests'] });
       onSuccess();
     },
@@ -242,14 +250,14 @@ function DetailPanel({
               <BarChart hint={hint.data} />
               <div className="text-[11px] text-bf-muted mt-2">
                 {hint.data.source === 'category'
-                  ? `같은 카테고리 최근 14일 매출 비율 기반 (WH-1 ${hint.data.wh1_pct}% · WH-2 ${hint.data.wh2_pct}%)`
-                  : '카테고리 매출 데이터 부족 → 60/40 fallback (수도권 우세 휴리스틱)'}
+                  ? `같은 카테고리 최근 14일 매출 비율 (수도권 ${hint.data.wh1_pct}% · 영남 ${hint.data.wh2_pct}%)`
+                  : '카테고리 매출 데이터 부족 — 기본값 60/40 (수도권 우세) 적용'}
               </div>
 
               <h3 className="h3 mt-4 mb-2">권역별 분배 수량 <span className="text-[10px] text-bf-muted ml-1">(수정 가능)</span></h3>
               <div className="grid grid-cols-2 gap-3 text-xs">
                 <label className="flex flex-col gap-1">
-                  <span className="text-bf-muted">WH-1 (수도권)</span>
+                  <span className="text-bf-muted">수도권 권역</span>
                   <input
                     type="number"
                     min={0}
@@ -259,7 +267,7 @@ function DetailPanel({
                   />
                 </label>
                 <label className="flex flex-col gap-1">
-                  <span className="text-bf-muted">WH-2 (영남)</span>
+                  <span className="text-bf-muted">영남 권역</span>
                   <input
                     type="number"
                     min={0}
@@ -269,7 +277,7 @@ function DetailPanel({
                   />
                 </label>
               </div>
-              <div className="text-[11px] text-bf-muted mt-2">총 발주 수량 = <b className="text-bf-text">{total}</b></div>
+              <div className="text-[11px] text-bf-muted mt-2">총 발주 수량 = <b className="text-bf-text">{total}</b>권</div>
             </>
           )}
         </div>
@@ -322,20 +330,20 @@ function BarChart({ hint }: { hint: NewBookForecastHint }) {
   const max = Math.max(hint.wh1_qty, hint.wh2_qty, 1);
   const Row = ({ label, qty, color }: { label: string; qty: number; color: string }) => (
     <div className="flex items-center gap-2 text-[11px]">
-      <span className="w-12 text-bf-muted">{label}</span>
+      <span className="w-16 text-bf-muted">{label}</span>
       <div className="flex-1 h-5 bg-bf-panel2 rounded overflow-hidden">
         <div
           className="h-full transition-[width] duration-300"
           style={{ width: `${(qty / max) * 100}%`, background: color }}
         />
       </div>
-      <span className="w-10 text-right font-mono">{qty}</span>
+      <span className="w-12 text-right font-mono">{qty}권</span>
     </div>
   );
   return (
     <div className="flex flex-col gap-1.5 mt-1">
-      <Row label="WH-1" qty={hint.wh1_qty} color="#1B3A5C" />
-      <Row label="WH-2" qty={hint.wh2_qty} color="#1A7A6D" />
+      <Row label="수도권" qty={hint.wh1_qty} color="#1B3A5C" />
+      <Row label="영남" qty={hint.wh2_qty} color="#1A7A6D" />
     </div>
   );
 }

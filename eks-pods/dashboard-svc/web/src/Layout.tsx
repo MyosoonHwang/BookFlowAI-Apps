@@ -102,7 +102,7 @@ export default function Layout() {
       <aside className="w-[220px] shrink-0 bg-bf-sidebar text-white flex flex-col">
         <div className="px-5 py-4 border-b border-bf-sidebar2">
           <div className="text-base font-bold flex items-center gap-2">📚 BookFlow</div>
-          <div className="text-[10px] text-gray-400 mt-0.5">V6.4 · MSA Demo</div>
+          <div className="text-[10px] text-gray-400 mt-0.5">도서 유통 통합 관제</div>
         </div>
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-3">
           {visible.map((s) => (
