@@ -81,3 +81,7 @@ async def post_intervention_reject(body: dict, token: str) -> tuple[int, Any]:
 
 async def post_notification_send(body: dict, token: str) -> tuple[int, Any]:
     return await _safe_post(f"{settings.notification_svc_url}/notification/send", body, token)
+
+
+async def post_decision_decide(body: dict, token: str) -> tuple[int, Any]:
+    return await _safe_post(f"{settings.decision_svc_url}/decision/decide", body, token)
