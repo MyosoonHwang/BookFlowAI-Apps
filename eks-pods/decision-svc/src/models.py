@@ -19,19 +19,28 @@ OrderStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXECUTED", "CANCELLED"
 
 
 class DecideRequest(BaseModel):
-    order_type: OrderType
+    """V6.2 3-stage cascade 입력 (단순화).
+
+    isbn13 + target_location_id + qty 만 받음 → 백엔드가 자동으로 Stage 1/2/3 결정.
+    `urgency_level`/`auto_execute_eligible` 등 도 자동 계산 (forecast_cache + inventory 기준).
+    """
     isbn13: str = Field(min_length=13, max_length=13)
-    source_location_id: int | None = None
-    target_location_id: int | None = None
+    target_location_id: int = Field(gt=0)
     qty: int = Field(gt=0)
-    urgency_level: Urgency = "NORMAL"
-    auto_execute_eligible: bool = False
-    forecast_rationale: dict | None = None
+    note: str | None = None  # 사용자 메모 (audit_log)
 
 
 class DecideResponse(BaseModel):
     order_id: UUID
+    order_type: OrderType
+    stage: Literal[1, 2, 3]
+    source_location_id: int | None
+    target_location_id: int
+    qty: int
+    urgency_level: Urgency
+    auto_execute_eligible: bool
     status: OrderStatus
+    rationale: dict
     created_at: datetime
 
 

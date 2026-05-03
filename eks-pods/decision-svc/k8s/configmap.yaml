@@ -10,5 +10,6 @@ data:
   DECISION_RDS_USER: "decision_svc"
   DECISION_REDIS_HOST: "bookflow-redis.xxpw8f.0001.apne1.cache.amazonaws.com"
   DECISION_REDIS_PORT: "6379"
+  DECISION_NOTIFICATION_SVC_URL: "http://notification-svc.bookflow.svc.cluster.local"
   DECISION_AUTH_MODE: "mock"
   DECISION_LOG_LEVEL: "INFO"

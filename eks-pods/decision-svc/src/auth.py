@@ -1,6 +1,7 @@
-"""mock auth middleware (same as inventory-svc / forecast-svc).
+"""mock auth middleware - decision-svc.
 
-Phase 4: real Entra OIDC swap.
+Bearer mock-token-{role} → AuthContext.token (forward to downstream pods).
+Phase 4: real Entra OIDC swap (azure-entra-mock RS256 동일 형식).
 """
 from fastapi import Header, HTTPException, status
 
@@ -13,13 +14,14 @@ ROLE_USERS = {
 
 
 class AuthContext:
-    __slots__ = ("user_id", "role", "scope_wh_id", "scope_store_id")
+    __slots__ = ("user_id", "role", "scope_wh_id", "scope_store_id", "token")
 
-    def __init__(self, user_id, role, scope_wh_id, scope_store_id):
+    def __init__(self, user_id, role, scope_wh_id, scope_store_id, token):
         self.user_id = user_id
         self.role = role
         self.scope_wh_id = scope_wh_id
         self.scope_store_id = scope_store_id
+        self.token = token
 
 
 def require_auth(authorization: str | None = Header(default=None)) -> AuthContext:
@@ -32,4 +34,4 @@ def require_auth(authorization: str | None = Header(default=None)) -> AuthContex
     user = ROLE_USERS.get(role_key)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"unknown role: {role_key}")
-    return AuthContext(*user)
+    return AuthContext(*user, token=authorization)

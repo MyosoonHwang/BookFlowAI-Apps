@@ -49,8 +49,16 @@ export type PendingOrder = {
 export const fetchOverview = (whId: number, role: Role) =>
   getJson<Overview>(`/dashboard/overview/${whId}`, role);
 
-export const fetchPending = (role: Role, limit = 100) =>
-  getJson<{ items: PendingOrder[] }>(`/dashboard/pending?limit=${limit}`, role);
+export const fetchPending = (
+  role: Role,
+  opts: { limit?: number; order_type?: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER'; wh_id?: number } = {},
+) => {
+  const qs = new URLSearchParams();
+  qs.set('limit', String(opts.limit ?? 100));
+  if (opts.order_type) qs.set('order_type', opts.order_type);
+  if (opts.wh_id !== undefined) qs.set('wh_id', String(opts.wh_id));
+  return getJson<{ items: PendingOrder[] }>(`/dashboard/pending?${qs.toString()}`, role);
+};
 
 // ─── Recent POS sales (direct RDS) ──────────────────────────────────
 export type SaleRow = {
@@ -249,8 +257,27 @@ export const postIntervene = (role: Role, action: 'approve' | 'reject', body: un
     `/dashboard/intervene/${action}`, role, body,
   );
 
-export const postDecide = (role: Role, body: unknown) =>
-  postJson<{ order_id: string; status: string; created_at: string }>('/dashboard/decide', role, body);
+export type DecideResult = {
+  order_id: string;
+  order_type: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
+  stage: 1 | 2 | 3;
+  source_location_id: number | null;
+  target_location_id: number;
+  qty: number;
+  urgency_level: string;
+  auto_execute_eligible: boolean;
+  status: string;
+  rationale: Record<string, unknown>;
+  created_at: string;
+};
+export const postDecide = (role: Role, body: { isbn13: string; target_location_id: number; qty: number; note?: string }) =>
+  postJson<DecideResult>('/dashboard/decide', role, body);
+
+export const postReturnsApprove = (role: Role, body: { return_id: string; note?: string }) =>
+  postJson<{ return_id: string; status: string; hq_approved_at: string }>('/dashboard/returns/approve', role, body);
+
+export const postNewBookApprove = (role: Role, request_id: number) =>
+  postJson<{ id: number; status: string; isbn13: string }>(`/dashboard/new-book-requests/${request_id}/approve`, role, {});
 
 export const postNotifySend = (role: Role, body: unknown) =>
   postJson<{ notification_id: string; status: string; sent_at: string }>('/dashboard/notify/send', role, body);

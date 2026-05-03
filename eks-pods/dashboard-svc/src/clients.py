@@ -44,16 +44,30 @@ async def get_forecast(store_id: int, snapshot_date: str, token: str) -> dict | 
     return await _safe_get(f"{settings.forecast_svc_url}/forecast/{store_id}/{snapshot_date}", token)
 
 
-async def get_pending_orders(token: str, limit: int = 50) -> dict | None:
-    # NOTE: .pen says `/decision/pending`. Phase 3 path-alignment.
-    return await _safe_get(f"{settings.decision_svc_url}/decision/pending-orders?limit={limit}", token)
+async def get_pending_orders(token: str, limit: int = 50, order_type: str | None = None, wh_id: int | None = None) -> dict | None:
+    """pending_orders 큐 - intervention-svc 의 role/scope 필터링된 큐 사용.
 
+    intervention-svc 가 인증 토큰 의 role+scope_wh_id 기반으로 자동 필터:
+    - hq-admin: 전체 (또는 명시적 wh_id/order_type)
+    - wh-manager: scope_wh_id 자동 적용
 
-async def get_intervention_queue(token: str) -> dict | None:
-    """intervention-svc 가 관리하는 승인 대기 큐 (`order_approvals` SOURCE/TARGET 진행 + returns 승인 대기).
-    Phase 3 까지 pod 미배포 → _safe_get 이 None 반환 (정상 BFF 거동).
+    decision-svc /pending-orders 는 raw SELECT 라 권한 분리 미적용 → 사용 안 함.
     """
-    return await _safe_get(f"{settings.intervention_svc_url}/intervention/queue", token)
+    qs = [f"limit={limit}"]
+    if order_type:
+        qs.append(f"order_type={order_type}")
+    if wh_id is not None:
+        qs.append(f"wh_id={wh_id}")
+    return await _safe_get(f"{settings.intervention_svc_url}/intervention/queue?{'&'.join(qs)}", token)
+
+
+async def get_intervention_queue(token: str, order_type: str | None = None, wh_id: int | None = None) -> dict | None:
+    """intervention-svc 의 PENDING 큐 (V6.2 3-stage 권한 정합 필터)."""
+    qs = []
+    if order_type: qs.append(f"order_type={order_type}")
+    if wh_id is not None: qs.append(f"wh_id={wh_id}")
+    qstr = ("?" + "&".join(qs)) if qs else ""
+    return await _safe_get(f"{settings.intervention_svc_url}/intervention/queue{qstr}", token)
 
 
 async def get_notifications_recent(token: str, limit: int = 50) -> dict | None:
@@ -85,3 +99,15 @@ async def post_notification_send(body: dict, token: str) -> tuple[int, Any]:
 
 async def post_decision_decide(body: dict, token: str) -> tuple[int, Any]:
     return await _safe_post(f"{settings.decision_svc_url}/decision/decide", body, token)
+
+
+async def post_intervention_returns_approve(body: dict, token: str) -> tuple[int, Any]:
+    return await _safe_post(f"{settings.intervention_svc_url}/intervention/returns/approve", body, token)
+
+
+async def post_intervention_new_book_approve(request_id: int, token: str) -> tuple[int, Any]:
+    return await _safe_post(
+        f"{settings.intervention_svc_url}/intervention/new-book-requests/{request_id}/approve",
+        {},
+        token,
+    )
