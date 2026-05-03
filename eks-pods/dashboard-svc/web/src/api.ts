@@ -310,8 +310,48 @@ export const postDecide = (role: Role, body: { isbn13: string; target_location_i
 export const postReturnsApprove = (role: Role, body: { return_id: string; note?: string }) =>
   postJson<{ return_id: string; status: string; hq_approved_at: string }>('/dashboard/returns/approve', role, body);
 
-export const postNewBookApprove = (role: Role, request_id: number) =>
-  postJson<{ id: number; status: string; isbn13: string }>(`/dashboard/new-book-requests/${request_id}/approve`, role, {});
+// UX-2 신간 편입 결정 (.pen HQ Requests 우측 패널)
+export type NewBookForecastHint = {
+  request_id: number;
+  default_qty: number;
+  wh1_qty: number;
+  wh2_qty: number;
+  wh1_pct: number;
+  wh2_pct: number;
+  source: 'category' | 'fallback';
+  raw_counts: { wh_id: number; n: number }[];
+};
+export const fetchNewBookForecastHint = (role: Role, request_id: number, defaultQty = 100) =>
+  getJson<NewBookForecastHint>(
+    `/dashboard/new-book-requests/${request_id}/forecast-hint?default_qty=${defaultQty}`,
+    role,
+  );
+
+export type NewBookApproveResp = {
+  id: number;
+  status: string;
+  isbn13: string;
+  wh1_qty: number;
+  wh2_qty: number;
+  orders: { order_id: string; wh_id: number; qty: number }[];
+};
+export const postNewBookApprove = (
+  role: Role,
+  request_id: number,
+  body: { wh1_qty: number; wh2_qty: number },
+) =>
+  postJson<NewBookApproveResp>(`/dashboard/new-book-requests/${request_id}/approve`, role, body);
+
+export const postNewBookReject = (
+  role: Role,
+  request_id: number,
+  body: { reason?: string } = {},
+) =>
+  postJson<{ id: number; status: string; isbn13: string }>(
+    `/dashboard/new-book-requests/${request_id}/reject`,
+    role,
+    body,
+  );
 
 export const postNotifySend = (role: Role, body: unknown) =>
   postJson<{ notification_id: string; status: string; sent_at: string }>('/dashboard/notify/send', role, body);
