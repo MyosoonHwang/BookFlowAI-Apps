@@ -53,18 +53,72 @@ def _get_target_wh(cur, target_location_id: int) -> int:
     return row[0]
 
 
+def _effective_available(
+    on_hand: int,
+    reserved_qty: int | None,
+    incoming_qty: int | None,
+    expected_demand: int | None,
+) -> int:
+    """FR-A5.1 effective available = on_hand - reserved - incoming - max(0, expected_demand)
+
+    incoming_qty: pending_orders APPROVED · target=self · executed_at IS NULL 의 합 (이미 다른 발주에 잡힌 입고)
+    expected_demand: forecast_cache 의 향후 14일 일별 predicted_demand 합
+
+    None 입력은 0 으로 처리 (DB NULL 안전).
+    expected_demand 가 음수면 0 으로 clamp (이상치/NULL 인 forecast 가 가용량을 늘리는 효과 차단).
+    """
+    on_hand = int(on_hand or 0)
+    reserved = int(reserved_qty or 0)
+    incoming = int(incoming_qty or 0)
+    demand = max(0, int(expected_demand or 0))
+    return on_hand - reserved - incoming - demand
+
+
 def _stage1_source(cur, isbn13: str, target_wh: int, target_location_id: int, qty: int) -> int | None:
-    """Stage 1: 같은 wh 안에서 가용 재고 ≥ qty 인 location 찾기 (가용 큰 순)."""
+    """Stage 1 (FR-A5.1): 같은 wh 안에서 effective_available ≥ qty 인 location.
+
+    effective_available = on_hand - reserved - incoming(APPROVED pending in-transit) - expected_demand(14d forecast).
+    가장 여유 큰 location 선택.
+
+    SOFT_DISCONTINUE 도서는 재분배 허용 (FR-A6.2), INACTIVE 도서는 재분배 차단 (Task 5 에서 보강).
+    여기서는 books active=TRUE 만 안전하게 필터.
+    """
     cur.execute(
         """
-        SELECT i.location_id, i.on_hand - i.reserved_qty AS available
-          FROM inventory i
-          JOIN locations l ON l.location_id = i.location_id
-         WHERE l.wh_id = %s
-           AND i.location_id <> %s
-           AND i.isbn13 = %s
-           AND (i.on_hand - i.reserved_qty) >= %s
-         ORDER BY available DESC
+        WITH stage1_candidates AS (
+            SELECT
+                i.location_id,
+                i.on_hand,
+                i.reserved_qty,
+                COALESCE((
+                    SELECT SUM(po.qty)
+                      FROM pending_orders po
+                     WHERE po.target_location_id = i.location_id
+                       AND po.isbn13 = i.isbn13
+                       AND po.status = 'APPROVED'
+                       AND po.executed_at IS NULL
+                ), 0) AS incoming_qty,
+                COALESCE((
+                    SELECT SUM(fc.predicted_demand)
+                      FROM forecast_cache fc
+                     WHERE fc.isbn13 = i.isbn13
+                       AND fc.store_id = i.location_id
+                       AND fc.snapshot_date >= CURRENT_DATE
+                       AND fc.snapshot_date <  CURRENT_DATE + INTERVAL '14 days'
+                ), 0) AS expected_demand_14d
+              FROM inventory i
+              JOIN locations l ON l.location_id = i.location_id
+              JOIN books b     ON b.isbn13 = i.isbn13
+             WHERE l.wh_id = %s
+               AND i.location_id <> %s
+               AND i.isbn13 = %s
+               AND b.active = TRUE
+        )
+        SELECT location_id,
+               (on_hand - reserved_qty - incoming_qty - GREATEST(0, expected_demand_14d)) AS effective_available
+          FROM stage1_candidates
+         WHERE (on_hand - reserved_qty - incoming_qty - GREATEST(0, expected_demand_14d)) >= %s
+         ORDER BY effective_available DESC
          LIMIT 1
         """,
         (target_wh, target_location_id, isbn13, qty),
