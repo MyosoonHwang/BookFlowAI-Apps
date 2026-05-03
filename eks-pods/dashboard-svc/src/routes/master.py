@@ -262,3 +262,218 @@ def sales_by_store(_: AuthContext = Depends(require_auth)):
             for r in rows
         ],
     }
+
+
+@router.get("/sales-by-store/{store_id}")
+def sales_by_specific_store(
+    store_id: int,
+    _: AuthContext = Depends(require_auth),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """매장별 sales_realtime 상세 (Branch Sales 페이지)."""
+    sql = """
+        SELECT s.txn_id, s.event_ts, s.isbn13, s.channel, s.qty, s.unit_price, s.revenue,
+               b.title, b.author
+          FROM sales_realtime s
+          LEFT JOIN books b ON b.isbn13 = s.isbn13
+         WHERE s.store_id = %s
+         ORDER BY s.event_ts DESC
+         LIMIT %s
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (store_id, limit))
+        rows = cur.fetchall()
+
+    return {
+        "store_id": store_id,
+        "items": [
+            {
+                "txn_id":     str(r[0]),
+                "event_ts":   r[1].isoformat() if r[1] else None,
+                "isbn13":     r[2],
+                "channel":    r[3],
+                "qty":        r[4],
+                "unit_price": r[5],
+                "revenue":    r[6],
+                "title":      r[7],
+                "author":     r[8],
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/locations/heatmap")
+def inventory_heatmap(_: AuthContext = Depends(require_auth)):
+    """전사 재고 히트맵 - location_id 별 SKU 수 + 보유 수량 + 부족(SKU 가용≤10) (HQ Inventory).
+
+    44 위치 = WH 2 + 오프라인 매장 10 + 온라인 가상 2 (V3 plan), 시드 데이터 location_id 1-12.
+    """
+    sql = """
+        SELECT i.location_id,
+               l.name, l.location_type, l.region, l.wh_id,
+               count(*) AS sku_count,
+               sum(i.on_hand)      AS total_qty,
+               sum(i.reserved_qty) AS reserved_qty,
+               count(*) FILTER (WHERE (i.on_hand - i.reserved_qty) <= 10) AS low_count,
+               count(*) FILTER (WHERE i.on_hand = 0) AS zero_count
+          FROM inventory i
+          LEFT JOIN locations l ON l.location_id = i.location_id
+         GROUP BY i.location_id, l.name, l.location_type, l.region, l.wh_id
+         ORDER BY i.location_id
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    return {
+        "items": [
+            {
+                "location_id":   r[0],
+                "name":          r[1] or f"location {r[0]}",
+                "location_type": r[2],
+                "region":        r[3],
+                "wh_id":         r[4],
+                "sku_count":     r[5],
+                "total_qty":     int(r[6] or 0),
+                "reserved_qty":  int(r[7] or 0),
+                "low_count":     r[8],
+                "zero_count":    r[9],
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/store-inventory/{store_id}")
+def inventory_by_store(store_id: int, _: AuthContext = Depends(require_auth)):
+    """특정 매장 재고 (Branch Inventory 페이지)."""
+    sql = """
+        SELECT i.isbn13, i.on_hand, i.reserved_qty, COALESCE(i.safety_stock, 0) AS safety_stock,
+               i.updated_at, b.title, b.author, b.category_name, b.price_sales
+          FROM inventory i
+          LEFT JOIN books b ON b.isbn13 = i.isbn13
+         WHERE i.location_id = %s
+         ORDER BY (i.on_hand - i.reserved_qty) ASC, i.isbn13
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (store_id,))
+        rows = cur.fetchall()
+
+    return {
+        "store_id": store_id,
+        "items": [
+            {
+                "isbn13":       r[0],
+                "on_hand":      r[1],
+                "reserved_qty": r[2],
+                "available":    r[1] - r[2],
+                "safety_stock": r[3],
+                "updated_at":   r[4].isoformat() if r[4] else None,
+                "title":        r[5],
+                "author":       r[6],
+                "category":     r[7],
+                "price_sales":  r[8],
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/instructions")
+def instructions(
+    _: AuthContext = Depends(require_auth),
+    wh_id: int | None = Query(default=None),
+):
+    """출고/입고 지시서 - APPROVED 된 pending_orders (WH Instructions / Branch Inbound).
+
+    `wh_id` 필터링 옵션 (WH manager 자기 창고 또는 매장 매니저 자기 매장).
+    """
+    if wh_id is not None:
+        sql = """
+            SELECT po.order_id, po.order_type, po.isbn13, po.source_location_id, po.target_location_id,
+                   po.qty, po.urgency_level, po.status, po.approved_at, b.title
+              FROM pending_orders po
+              LEFT JOIN books b ON b.isbn13 = po.isbn13
+              LEFT JOIN locations sl ON sl.location_id = po.source_location_id
+              LEFT JOIN locations tl ON tl.location_id = po.target_location_id
+             WHERE po.status IN ('APPROVED', 'EXECUTED')
+               AND (sl.wh_id = %s OR tl.wh_id = %s)
+             ORDER BY po.urgency_level DESC, po.approved_at DESC NULLS LAST
+             LIMIT 100
+        """
+        params = (wh_id, wh_id)
+    else:
+        sql = """
+            SELECT po.order_id, po.order_type, po.isbn13, po.source_location_id, po.target_location_id,
+                   po.qty, po.urgency_level, po.status, po.approved_at, b.title
+              FROM pending_orders po
+              LEFT JOIN books b ON b.isbn13 = po.isbn13
+             WHERE po.status IN ('APPROVED', 'EXECUTED')
+             ORDER BY po.urgency_level DESC, po.approved_at DESC NULLS LAST
+             LIMIT 100
+        """
+        params = ()
+
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+    return {
+        "items": [
+            {
+                "order_id":          str(r[0]),
+                "order_type":        r[1],
+                "isbn13":            r[2],
+                "source_location_id": r[3],
+                "target_location_id": r[4],
+                "qty":               r[5],
+                "urgency_level":     r[6],
+                "status":            r[7],
+                "approved_at":       r[8].isoformat() if r[8] else None,
+                "title":             r[9],
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/curation/{store_id}")
+def curation(store_id: int, _: AuthContext = Depends(require_auth)):
+    """매장 큐레이션 - spike_events (인기 도서) + 매장 재고 가용성 (Branch Curation).
+
+    `spike_events` 와 `inventory(location=store)` JOIN 해서 "인기 + 매장 재고 OK" 도서 우선 표시.
+    """
+    sql = """
+        SELECT s.isbn13, s.z_score, s.mentions_count, s.detected_at,
+               b.title, b.author, b.category_name, b.price_sales,
+               COALESCE(i.on_hand, 0) AS on_hand, COALESCE(i.reserved_qty, 0) AS reserved_qty
+          FROM spike_events s
+          LEFT JOIN books b ON b.isbn13 = s.isbn13
+          LEFT JOIN inventory i ON i.isbn13 = s.isbn13 AND i.location_id = %s
+         WHERE s.detected_at > NOW() - INTERVAL '24 hours'
+         ORDER BY s.z_score DESC NULLS LAST, s.detected_at DESC
+         LIMIT 20
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (store_id,))
+        rows = cur.fetchall()
+
+    return {
+        "store_id": store_id,
+        "items": [
+            {
+                "isbn13":         r[0],
+                "z_score":        float(r[1]) if r[1] is not None else None,
+                "mentions_count": r[2],
+                "detected_at":    r[3].isoformat() if r[3] else None,
+                "title":          r[4],
+                "author":         r[5],
+                "category":       r[6],
+                "price_sales":    r[7],
+                "on_hand":        r[8],
+                "available":      r[8] - r[9],
+            }
+            for r in rows
+        ],
+    }
