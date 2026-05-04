@@ -46,6 +46,11 @@ NOTIFICATION_SVC_URL = os.environ.get(
     "http://notification-svc.bookflow.svc.cluster.local",
 )
 
+INVENTORY_SVC_URL = os.environ.get(
+    "INTERVENTION_INVENTORY_SVC_URL",
+    "http://inventory-svc.bookflow.svc.cluster.local",
+)
+
 
 def _notify(token: str, event_type: str, severity: str, payload: dict, correlation_id: str | None = None) -> None:
     """notification-svc /send 호출 (실패 비치명 · log only)."""
@@ -106,9 +111,18 @@ def _validate_authority(cur, ctx: AuthContext, order_id: str, side: str) -> tupl
                                 detail="REBALANCE 는 approval_side='FINAL' 만 허용 (단일 승인)")
         if ctx.role == "hq-admin":
             return order_type, source_wh, target_wh
+        # FR-A6.6 매장 직원 입고 거부 — REBALANCE target 이 자기 매장이면 거부 권한
+        if ctx.role == "branch-clerk":
+            if ctx.scope_store_id is None:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail="branch-clerk scope_store_id 부재 (인증 토큰 손상)")
+            if ctx.scope_store_id != target_loc:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"자기 매장만 거부 가능 (scope_store_id={ctx.scope_store_id} · target={target_loc})")
+            return order_type, source_wh, target_wh
         if ctx.role != "wh-manager" or ctx.scope_wh_id is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="REBALANCE 는 wh-manager 또는 hq-admin 만 승인 가능")
+                                detail="REBALANCE 는 wh-manager · branch-clerk · hq-admin 만 승인 가능")
         if ctx.scope_wh_id not in (source_wh, target_wh):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                 detail=f"본인 창고 외 주문 승인 불가 (scope wh_id={ctx.scope_wh_id} · order wh_id={source_wh}/{target_wh})")
@@ -609,3 +623,111 @@ def change_book_status(
         conn.commit()
 
     return {"isbn13": row[0], "active": row[1], "discontinue_mode": row[2], "mode": mode}
+
+
+# ─── A1 inbound receive (FR-A6.6 + 후속) ──────────────────────────────────
+@router.post("/inbound/{order_id}/receive")
+def receive_inbound(order_id: str, ctx: AuthContext = Depends(require_auth)):
+    """매장/창고 입고 수령 처리 — pending_orders.status='EXECUTED' + inventory.on_hand += qty.
+
+    권한:
+      - branch-clerk: scope_store_id == target_location_id
+      - wh-manager:   scope_wh_id   == target_wh
+      - hq-admin:     모두 허용
+
+    Single writer 패턴 유지: inventory mutation 은 inventory-svc /adjust 프록시 호출 (REST).
+    조회·status·audit 는 본 svc 가 담당.
+    """
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT order_type, target_location_id, qty, isbn13, status
+                     FROM pending_orders WHERE order_id = %s""",
+                (order_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="order not found")
+            order_type, target_loc, qty, isbn13, st = row
+            if st != "APPROVED":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"수령은 APPROVED 상태에서만 가능 (현재 status={st})",
+                )
+            target_wh = _location_wh(cur, target_loc)
+
+            # 권한
+            if ctx.role == "branch-clerk":
+                if ctx.scope_store_id is None or ctx.scope_store_id != target_loc:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"자기 매장만 수령 가능 (scope_store_id={ctx.scope_store_id} · target={target_loc})",
+                    )
+            elif ctx.role == "wh-manager":
+                if ctx.scope_wh_id is None or ctx.scope_wh_id != target_wh:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"자기 권역만 수령 가능 (scope_wh_id={ctx.scope_wh_id} · target_wh={target_wh})",
+                    )
+            elif ctx.role != "hq-admin":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="수령 권한 없음")
+
+            # status=EXECUTED + executed_at + audit
+            cur.execute(
+                """UPDATE pending_orders SET status='EXECUTED', executed_at=NOW()
+                    WHERE order_id = %s""",
+                (order_id,),
+            )
+            cur.execute(
+                """INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
+                   VALUES ('user', %s, 'inbound.receive', 'pending_orders', %s, %s::jsonb)""",
+                (ctx.user_id, order_id, json.dumps({
+                    "status": "EXECUTED", "qty": qty, "isbn13": isbn13, "target_location_id": target_loc,
+                })),
+            )
+        conn.commit()
+
+    # inventory-svc /adjust 호출 (별도 transaction · 실패 비치명 · log + 알림)
+    inv_status = "PENDING_ADJUST"
+    try:
+        with httpx.Client(timeout=3.0) as c:
+            r = c.post(
+                f"{INVENTORY_SVC_URL}/inventory/adjust",
+                headers={"Authorization": ctx.token},
+                json={
+                    "isbn13": isbn13,
+                    "location_id": target_loc,
+                    "delta": qty,
+                    "reason": f"입고수령:{order_id[:8]}",
+                },
+            )
+            if r.status_code == 200:
+                inv_status = "ADJUSTED"
+            else:
+                log.warning("inventory adjust HTTP %s: %s", r.status_code, r.text[:200])
+    except Exception as e:
+        log.warning("inventory adjust call failed (non-fatal): %s", e)
+
+    # 시트04 변형: 수령 완료 알림 (severity INFO)
+    _notify(
+        ctx.token,
+        "OrderExecuted",
+        severity="INFO",
+        payload={
+            "order_id": order_id,
+            "order_type": order_type,
+            "isbn13": isbn13,
+            "qty": qty,
+            "target_location_id": target_loc,
+            "inventory_adjust": inv_status,
+        },
+        correlation_id=order_id,
+    )
+
+    return {
+        "order_id": order_id,
+        "status": "EXECUTED",
+        "isbn13": isbn13,
+        "qty": qty,
+        "inventory_adjust": inv_status,
+    }

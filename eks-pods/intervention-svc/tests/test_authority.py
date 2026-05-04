@@ -35,9 +35,9 @@ class FakeCur:
         return self._next
 
 
-def _ctx(role: str, scope_wh_id: int | None = None) -> AuthContext:
-    user_id = {"hq-admin": "u1", "wh-manager": f"u-wh{scope_wh_id}"}.get(role, "ux")
-    return AuthContext(user_id, role, scope_wh_id, None, token="Bearer mock-token-x")
+def _ctx(role: str, scope_wh_id: int | None = None, scope_store_id: int | None = None) -> AuthContext:
+    user_id = {"hq-admin": "u1", "wh-manager": f"u-wh{scope_wh_id}"}.get(role, f"u-{role}")
+    return AuthContext(user_id, role, scope_wh_id, scope_store_id, token="Bearer mock-token-x")
 
 
 def _cur(order_type: str, source_loc: int | None, target_loc: int | None,
@@ -160,3 +160,37 @@ def test_order_not_found_404():
     with pytest.raises(HTTPException) as e:
         _validate_authority(cur, _ctx("hq-admin"), "x", "FINAL")
     assert e.value.status_code == 404
+
+
+# ─── branch-clerk REBALANCE 거부 권한 (FR-A6.6 정합) ──────────────────────
+# REBALANCE 의 target 이 store 면 매장 직원이 입고 거부 가능 (자기 매장 한정).
+# FR-A6.6 "지점 수동 개입 (입고 거부·재고 조정)".
+def test_rebalance_branch_clerk_target_match_ok():
+    """branch-clerk scope_store_id == target_location_id → REBALANCE FINAL 거부 OK"""
+    cur = _cur("REBALANCE", 4, 3, {4: 1, 3: 1})
+    ot, *_ = _validate_authority(cur, _ctx("branch-clerk", scope_store_id=3), "x", "FINAL")
+    assert ot == "REBALANCE"
+
+
+def test_rebalance_branch_clerk_target_mismatch_403():
+    """branch-clerk 가 자기 매장 외 REBALANCE 는 거부 불가"""
+    cur = _cur("REBALANCE", 4, 3, {4: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("branch-clerk", scope_store_id=5), "x", "FINAL")
+    assert e.value.status_code == 403
+
+
+def test_rebalance_branch_clerk_no_scope_403():
+    """branch-clerk scope_store_id 부재 (인증 손상) → 403"""
+    cur = _cur("REBALANCE", 4, 3, {4: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("branch-clerk", scope_store_id=None), "x", "FINAL")
+    assert e.value.status_code == 403
+
+
+def test_wh_transfer_branch_clerk_403():
+    """WH_TRANSFER target 은 WH 라서 branch-clerk 와 무관 → 403"""
+    cur = _cur("WH_TRANSFER", 1, 2, {1: 1, 2: 2})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("branch-clerk", scope_store_id=3), "x", "TARGET")
+    assert e.value.status_code == 403

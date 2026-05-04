@@ -22,6 +22,7 @@ from ..clients import (
     post_intervention_new_book_reject,
     post_intervention_reject,
     post_intervention_returns_approve,
+    post_inbound_receive,
     post_inventory_adjust,
     post_notification_send,
 )
@@ -117,6 +118,17 @@ async def inventory_adjust(body: dict = Body(...), ctx: AuthContext = Depends(re
     """
     sc, data = await post_inventory_adjust(body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "inventory-svc unavailable"})
+
+
+@router.post("/inbound/{order_id}/receive")
+async def inbound_receive(order_id: str, ctx: AuthContext = Depends(require_auth)):
+    """UX-6 매장 입고 수령 — intervention-svc /intervention/inbound/{order_id}/receive 프록시.
+
+    매장 직원 (branch-clerk · scope_store_id) 또는 자기 권역 wh-manager / hq-admin 만 호출 가능.
+    완료 시 status=EXECUTED + inventory.on_hand += qty (intervention 내부에서 inventory-svc 호출).
+    """
+    sc, data = await post_inbound_receive(order_id, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
 
 
 @router.post("/returns/approve")

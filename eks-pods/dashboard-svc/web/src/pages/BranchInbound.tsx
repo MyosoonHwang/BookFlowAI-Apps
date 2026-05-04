@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
-import { fetchInstructions, postIntervene, type Role } from '../api';
+import { fetchInstructions, postInboundReceive, postIntervene, type Role } from '../api';
 import { ko, ORDER_TYPE_KO, URGENCY_KO } from '../labels';
 import ConfirmModal from '../components/ConfirmModal';
 import EmptyState from '../components/EmptyState';
@@ -44,7 +44,7 @@ export default function BranchInbound() {
   const [receiveTarget, setReceiveTarget] = useState<{ order_id: string; qty: number } | null>(null);
 
   const reject = useMutation({
-    mutationFn: async (body: { order_id: string; approval_side: 'TARGET'; reject_reason: string }) => {
+    mutationFn: async (body: { order_id: string; approval_side: 'FINAL'; reject_reason: string }) => {
       const r = await postIntervene(role, 'reject', body);
       if (r.detail) throw new Error(r.detail);
       return r;
@@ -61,13 +61,29 @@ export default function BranchInbound() {
     },
   });
 
+  const receiveMu = useMutation({
+    mutationFn: (id: string) => postInboundReceive(role, id),
+    onSuccess: (r) => {
+      if (r.detail) {
+        setFeedback({ type: 'error', msg: `수령 실패: ${r.detail}` });
+        return;
+      }
+      const tail = r.inventory_adjust === 'ADJUSTED' ? '· 매장 재고 반영됨' : '· 재고 반영 보류 (별도 처리)';
+      setFeedback({
+        type: 'success',
+        msg: `수령 완료 (${r.qty ?? '?'}권) ${tail}`,
+      });
+      qc.invalidateQueries({ queryKey: ['instr-all', role] });
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFeedback({ type: 'error', msg: `수령 실패: ${msg}` });
+    },
+  });
+
   const handleReceiveConfirm = () => {
     if (!receiveTarget) return;
-    // 향후 별도 endpoint: /intervention/inbound/{order_id}/receive
-    setFeedback({
-      type: 'success',
-      msg: `수령 접수 (order ${receiveTarget.order_id.slice(0, 8)}…) — 후속 PR 에서 재고 반영 wiring 예정`,
-    });
+    receiveMu.mutate(receiveTarget.order_id);
     setReceiveTarget(null);
   };
 
@@ -76,7 +92,7 @@ export default function BranchInbound() {
     const reasonText = note ? `${reason}: ${note}`.slice(0, 50) : reason;
     reject.mutate({
       order_id: rejectTarget.order_id,
-      approval_side: 'TARGET',
+      approval_side: 'FINAL',
       reject_reason: reasonText,
     });
   };
