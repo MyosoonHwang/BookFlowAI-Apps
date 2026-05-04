@@ -38,3 +38,22 @@ def parse_bearer(authorization: str | None) -> AuthContext:
 
 def require_auth(authorization: str | None = Header(default=None)) -> AuthContext:
     return parse_bearer(authorization)
+
+
+def _check_store_scope(ctx: AuthContext, store_id: int) -> None:
+    """FR-A7.3 branch-clerk 매장 스코프 enforce.
+
+    매장 단위 endpoint 진입 시 호출 — branch-clerk 가 자기 매장 외 store_id 조회 시 403.
+    hq-admin / wh-manager 는 전사 / 권역 + 타 센터 read 권한 (FR-A7.1 · A7.2) → 통과.
+    """
+    if ctx.role == "branch-clerk":
+        if ctx.scope_store_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="branch-clerk scope_store_id 부재 (인증 토큰 손상)",
+            )
+        if ctx.scope_store_id != store_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"자기 매장만 조회 가능 (scope_store_id={ctx.scope_store_id} · 요청 store_id={store_id})",
+            )

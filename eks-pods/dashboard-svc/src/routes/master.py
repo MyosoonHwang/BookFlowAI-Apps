@@ -5,7 +5,7 @@ not via inventory-svc. These pages don't need transactional consistency.
 """
 from fastapi import APIRouter, Depends, Query
 
-from ..auth import AuthContext, require_auth
+from ..auth import AuthContext, _check_store_scope, require_auth
 from ..db import db_conn
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard-master"])
@@ -414,10 +414,11 @@ def sales_by_store(_: AuthContext = Depends(require_auth)):
 @router.get("/sales-by-store/{store_id}")
 def sales_by_specific_store(
     store_id: int,
-    _: AuthContext = Depends(require_auth),
+    ctx: AuthContext = Depends(require_auth),
     limit: int = Query(default=50, ge=1, le=500),
 ):
-    """매장별 sales_realtime 상세 (Branch Sales 페이지)."""
+    """매장별 sales_realtime 상세 (Branch Sales 페이지). FR-A7.3 매장 스코프 enforce."""
+    _check_store_scope(ctx, store_id)
     sql = """
         SELECT s.txn_id, s.event_ts, s.isbn13, s.channel, s.qty, s.unit_price, s.revenue,
                b.title, b.author
@@ -493,8 +494,9 @@ def inventory_heatmap(_: AuthContext = Depends(require_auth)):
 
 
 @router.get("/store-inventory/{store_id}")
-def inventory_by_store(store_id: int, _: AuthContext = Depends(require_auth)):
-    """특정 매장 재고 (Branch Inventory 페이지)."""
+def inventory_by_store(store_id: int, ctx: AuthContext = Depends(require_auth)):
+    """특정 매장 재고 (Branch Inventory 페이지). FR-A7.3 매장 스코프 enforce."""
+    _check_store_scope(ctx, store_id)
     sql = """
         SELECT i.isbn13, i.on_hand, i.reserved_qty, COALESCE(i.safety_stock, 0) AS safety_stock,
                i.updated_at, b.title, b.author, b.category_name, b.price_sales
@@ -586,11 +588,13 @@ def instructions(
 
 
 @router.get("/curation/{store_id}")
-def curation(store_id: int, _: AuthContext = Depends(require_auth)):
+def curation(store_id: int, ctx: AuthContext = Depends(require_auth)):
     """매장 큐레이션 - spike_events (인기 도서) + 매장 재고 가용성 (Branch Curation).
 
     `spike_events` 와 `inventory(location=store)` JOIN 해서 "인기 + 매장 재고 OK" 도서 우선 표시.
+    FR-A7.3 매장 스코프 enforce.
     """
+    _check_store_scope(ctx, store_id)
     sql = """
         SELECT s.isbn13, s.z_score, s.mentions_count, s.detected_at,
                b.title, b.author, b.category_name, b.price_sales,
