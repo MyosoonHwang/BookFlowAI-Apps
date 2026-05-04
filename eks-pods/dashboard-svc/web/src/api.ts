@@ -310,6 +310,19 @@ export type DecideResult = {
 export const postDecide = (role: Role, body: { isbn13: string; target_location_id: number; qty: number; note?: string }) =>
   postJson<DecideResult>('/dashboard/decide', role, body);
 
+// UX-6: 재고 수동 조정 (Manual 페이지) — inventory-svc /adjust 프록시.
+export type InventoryAdjustResult = {
+  isbn13: string;
+  location_id: number;
+  on_hand_before: number;
+  on_hand_after: number;
+  detail?: string;
+};
+export const postInventoryAdjust = (
+  role: Role,
+  body: { isbn13: string; location_id: number; delta: number; reason: string },
+) => postJson<InventoryAdjustResult>('/dashboard/inventory/adjust', role, body);
+
 export const postReturnsApprove = (role: Role, body: { return_id: string; note?: string }) =>
   postJson<{ return_id: string; status: string; hq_approved_at: string }>('/dashboard/returns/approve', role, body);
 
