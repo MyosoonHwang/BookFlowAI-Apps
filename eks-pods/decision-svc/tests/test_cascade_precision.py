@@ -22,6 +22,7 @@ FR-A6.2 / A5.8 / A3.8 (INACTIVE / SOFT_DISCONTINUE 도서 의사결정 통제):
 import pytest
 
 from src.routes.decision import (
+    _auto_execute_eligible,
     _check_book_decision_eligibility,
     _effective_available,
     _partner_surplus,
@@ -196,3 +197,42 @@ def test_book_eligibility_active_false_with_inactive_mode_blocks_all():
     allow_dec, allow_pub = _check_book_decision_eligibility(active=False, discontinue_mode="INACTIVE")
     assert allow_dec is False
     assert allow_pub is False
+
+
+# ─── _auto_execute_eligible (FR-A4.7) ───────────────────────────────────────
+# FR-A4.7: 외부 발주 (Stage 3 PUBLISHER_ORDER) + 긴급 (URGENT/CRITICAL) 만 자동 승인 후보.
+# 권역 내 재분배 (Stage 1) / 권역 이동 (Stage 2) 는 항상 사람 승인 필요 (담당자 책임).
+# CronJob 07:00 KST 가 auto_execute_eligible=TRUE row 를 일괄 승인 + 발주 (사용자 결정).
+def test_auto_execute_stage3_urgent_eligible():
+    """Stage 3 + URGENT → True (외부 발주 자동 트리거)"""
+    assert _auto_execute_eligible(stage_num=3, urgency_level="URGENT") is True
+
+
+def test_auto_execute_stage3_critical_eligible():
+    """Stage 3 + CRITICAL → True"""
+    assert _auto_execute_eligible(stage_num=3, urgency_level="CRITICAL") is True
+
+
+def test_auto_execute_stage3_normal_not_eligible():
+    """Stage 3 + NORMAL → False (긴급 아니면 사람 승인 받기)"""
+    assert _auto_execute_eligible(stage_num=3, urgency_level="NORMAL") is False
+
+
+def test_auto_execute_stage1_urgent_not_eligible():
+    """Stage 1 + URGENT → False (재분배는 항상 사람 승인 · 기존 True 정정)"""
+    assert _auto_execute_eligible(stage_num=1, urgency_level="URGENT") is False
+
+
+def test_auto_execute_stage1_critical_not_eligible():
+    """Stage 1 + CRITICAL → False (기존 True 정정)"""
+    assert _auto_execute_eligible(stage_num=1, urgency_level="CRITICAL") is False
+
+
+def test_auto_execute_stage2_critical_not_eligible():
+    """Stage 2 + CRITICAL → False (권역 이동은 SOURCE/TARGET 양측 사람 승인 필요)"""
+    assert _auto_execute_eligible(stage_num=2, urgency_level="CRITICAL") is False
+
+
+def test_auto_execute_stage1_normal_not_eligible():
+    """Stage 1 + NORMAL → False"""
+    assert _auto_execute_eligible(stage_num=1, urgency_level="NORMAL") is False

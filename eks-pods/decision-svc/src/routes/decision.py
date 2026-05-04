@@ -74,6 +74,18 @@ def _effective_available(
     return on_hand - reserved - incoming - demand
 
 
+def _auto_execute_eligible(stage_num: int, urgency_level: str) -> bool:
+    """FR-A4.7 자동 발주 자격 — 외부 발주 (Stage 3 PUBLISHER_ORDER) + 긴급 (URGENT/CRITICAL) 만.
+
+    Stage 1 (재분배) · Stage 2 (권역이동) 는 항상 사람 승인 필요 (SOURCE/TARGET 담당자 책임).
+    Stage 3 외부 발주는 사람 부재 시 07:00 KST CronJob 이 일괄 자동 승인 (사용자 결정 ·
+    메모리 `project_auto_execute_07_kst`).
+
+    이전 잘못된 정의 (Stage 1 + URGENT/CRITICAL) → 정정.
+    """
+    return stage_num == 3 and urgency_level in ("URGENT", "CRITICAL")
+
+
 def _check_book_decision_eligibility(
     active: bool,
     discontinue_mode: str | None,
@@ -352,8 +364,9 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
             if req.note:
                 rationale["note"] = req.note
 
-            # auto_execute_eligible: Stage 1 + URGENT/CRITICAL
-            auto_exec = stage_num == 1 and urgency in ("URGENT", "CRITICAL")
+            # auto_execute_eligible: FR-A4.7 = Stage 3 (PUBLISHER_ORDER) + URGENT/CRITICAL
+            # 07:00 KST intervention-svc CronJob 이 auto_execute_eligible=TRUE row 일괄 자동 승인 + 발주
+            auto_exec = _auto_execute_eligible(stage_num, urgency)
 
             cur.execute(
                 """
