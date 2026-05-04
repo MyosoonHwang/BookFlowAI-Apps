@@ -74,6 +74,28 @@ def _effective_available(
     return on_hand - reserved - incoming - demand
 
 
+def _partner_surplus(
+    on_hand: int,
+    reserved_qty: int | None,
+    safety_stock: int | None,
+    expected_demand: int | None,
+) -> int:
+    """FR-A5.3 타 권역 WH 의 권역간 이동 가능 여유분 = on_hand - reserved - safety_stock - max(0, expected_demand_14d)
+
+    Stage 1 의 _effective_available 와 다른 점:
+      - 안전재고를 차감 (자기 wh 보전이 우선 · 보낼 수 있는 양은 안전재고 초과분만)
+      - incoming 은 차감 안 함 (타 권역 입장 · 입고 예정은 자기 안전재고 회복용)
+
+    음수면 보낼 수 없음 (자기 wh 도 부족 → 발주 대상).
+    None 입력은 0 으로 처리, demand 음수는 0 clamp (이상치 forecast 방어).
+    """
+    on_hand = int(on_hand or 0)
+    reserved = int(reserved_qty or 0)
+    safety = int(safety_stock or 0)
+    demand = max(0, int(expected_demand or 0))
+    return on_hand - reserved - safety - demand
+
+
 def _stage1_source(cur, isbn13: str, target_wh: int, target_location_id: int, qty: int) -> int | None:
     """Stage 1 (FR-A5.1): 같은 wh 안에서 effective_available ≥ qty 인 location.
 
@@ -127,25 +149,66 @@ def _stage1_source(cur, isbn13: str, target_wh: int, target_location_id: int, qt
     return row[0] if row else None
 
 
-def _stage2_source(cur, isbn13: str, target_wh: int, qty: int) -> int | None:
-    """Stage 2: 다른 wh 의 warehouse 위치 (location_type IN ('WAREHOUSE','warehouse') 또는 wh_id 별 첫 위치) 에 합계 가용 ≥ qty?
-    → 그 wh 의 가장 큰 가용 location 을 source 로.
+def _stage2_source(cur, isbn13: str, target_wh: int, qty: int) -> dict | None:
+    """Stage 2 (FR-A5.3): 다른 권역 WH 중 partner_surplus ≥ qty 인 곳 선택.
+
+    partner_surplus = on_hand - reserved - safety_stock - max(0, expected_demand_14d)
+    (자기 안전재고 + 14일 예상수요를 보전하고도 보낼 수 있는 양)
+
+    필터:
+      - l.wh_id <> target_wh (다른 권역)
+      - l.location_type = 'WH' (권역간 이동은 WH 사이만 · 매장 직송 X)
+      - b.active = TRUE (INACTIVE 도서 차단)
+
+    Returns enriched dict (caller 가 rationale 에 partner_* 필드 채울 수 있음) or None.
     """
     cur.execute(
         """
-        SELECT i.location_id, i.on_hand - i.reserved_qty AS available
-          FROM inventory i
-          JOIN locations l ON l.location_id = i.location_id
-         WHERE l.wh_id <> %s
-           AND i.isbn13 = %s
-           AND (i.on_hand - i.reserved_qty) >= %s
-         ORDER BY available DESC
+        WITH stage2_candidates AS (
+            SELECT
+                i.location_id,
+                l.wh_id AS partner_wh,
+                i.on_hand,
+                i.reserved_qty,
+                COALESCE(i.safety_stock, 0) AS safety_stock,
+                COALESCE((
+                    SELECT SUM(fc.predicted_demand)::int
+                      FROM forecast_cache fc
+                     WHERE fc.isbn13 = i.isbn13
+                       AND fc.store_id = i.location_id
+                       AND fc.snapshot_date >= CURRENT_DATE
+                       AND fc.snapshot_date <  CURRENT_DATE + INTERVAL '14 days'
+                ), 0) AS expected_demand_14d
+              FROM inventory i
+              JOIN locations l ON l.location_id = i.location_id
+              JOIN books b     ON b.isbn13 = i.isbn13
+             WHERE l.wh_id <> %s
+               AND l.location_type = 'WH'
+               AND i.isbn13 = %s
+               AND b.active = TRUE
+        )
+        SELECT location_id, partner_wh, on_hand, reserved_qty, safety_stock,
+               expected_demand_14d,
+               (on_hand - reserved_qty - safety_stock - GREATEST(0, expected_demand_14d)) AS surplus
+          FROM stage2_candidates
+         WHERE (on_hand - reserved_qty - safety_stock - GREATEST(0, expected_demand_14d)) >= %s
+         ORDER BY surplus DESC
          LIMIT 1
         """,
         (target_wh, isbn13, qty),
     )
     row = cur.fetchone()
-    return row[0] if row else None
+    if row is None:
+        return None
+    return {
+        "location_id": row[0],
+        "partner_wh": row[1],
+        "partner_on_hand": int(row[2] or 0),
+        "partner_reserved": int(row[3] or 0),
+        "partner_safety": int(row[4] or 0),
+        "partner_expected_demand_14d": int(row[5] or 0),
+        "partner_surplus": int(row[6] or 0),
+    }
 
 
 def _calc_urgency(cur, isbn13: str, target_location_id: int, qty: int) -> tuple[str, dict]:
@@ -219,17 +282,29 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
             source_loc: int | None
 
             s1 = _stage1_source(cur, req.isbn13, target_wh, req.target_location_id, req.qty)
+            stage2_info: dict | None = None
             if s1 is not None:
                 stage_num, order_type, source_loc = 1, "REBALANCE", s1
             else:
-                s2 = _stage2_source(cur, req.isbn13, target_wh, req.qty)
-                if s2 is not None:
-                    stage_num, order_type, source_loc = 2, "WH_TRANSFER", s2
+                stage2_info = _stage2_source(cur, req.isbn13, target_wh, req.qty)
+                if stage2_info is not None:
+                    stage_num, order_type, source_loc = 2, "WH_TRANSFER", stage2_info["location_id"]
                 else:
                     stage_num, order_type, source_loc = 3, "PUBLISHER_ORDER", None
 
             urgency, rationale = _calc_urgency(cur, req.isbn13, req.target_location_id, req.qty)
             rationale.update({"stage": stage_num, "selected_order_type": order_type, "source_location_id": source_loc})
+            if stage2_info is not None:
+                # FR-A5.3 권역 이전 근거 — partner WH 의 실제 surplus 계산 내역
+                rationale.update({
+                    "partner_wh": stage2_info["partner_wh"],
+                    "partner_on_hand": stage2_info["partner_on_hand"],
+                    "partner_reserved": stage2_info["partner_reserved"],
+                    "partner_safety": stage2_info["partner_safety"],
+                    "partner_expected_demand_14d": stage2_info["partner_expected_demand_14d"],
+                    "partner_surplus": stage2_info["partner_surplus"],
+                    "transferable_qty": min(stage2_info["partner_surplus"], req.qty),
+                })
             if req.note:
                 rationale["note"] = req.note
 
