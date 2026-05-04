@@ -22,6 +22,7 @@ from ..clients import (
     post_intervention_new_book_reject,
     post_intervention_reject,
     post_intervention_returns_approve,
+    post_inventory_adjust,
     post_notification_send,
 )
 
@@ -105,6 +106,17 @@ async def decide(body: dict = Body(...), ctx: AuthContext = Depends(require_auth
     """HQ Decision 페이지 - 의사결정 1건 생성 (decision-svc /decide proxy · 3-stage cascade)."""
     sc, data = await post_decision_decide(body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
+
+
+@router.post("/inventory/adjust")
+async def inventory_adjust(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """UX-6 Manual 페이지 — 재고 수동 조정 (분실/파손/도난).
+
+    inventory-svc 가 single writer · 권한 검증 (FR-A6.6 + branch-clerk scope_store_id).
+    body: { isbn13, location_id, delta, reason }
+    """
+    sc, data = await post_inventory_adjust(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "inventory-svc unavailable"})
 
 
 @router.post("/returns/approve")

@@ -85,6 +85,14 @@ async def _safe_post(url: str, body: dict, token: str) -> tuple[int, Any]:
         return 503, None
 
 
+async def post_inventory_adjust(body: dict, token: str) -> tuple[int, Any]:
+    """UX-6 Manual 재고 수동 조정 — inventory-svc /inventory/adjust 프록시.
+
+    inventory-svc 가 single writer 라서 dashboard-svc 가 직접 DB 안 건드리고 proxy.
+    """
+    return await _safe_post(f"{settings.inventory_svc_url}/inventory/adjust", body, token)
+
+
 async def post_intervention_approve(body: dict, token: str) -> tuple[int, Any]:
     return await _safe_post(f"{settings.intervention_svc_url}/intervention/approve", body, token)
 

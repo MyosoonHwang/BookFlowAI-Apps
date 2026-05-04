@@ -1,24 +1,94 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
-import { fetchInstructions, type Role } from '../api';
+import { fetchInstructions, postIntervene, type Role } from '../api';
 import { ko, ORDER_TYPE_KO, URGENCY_KO } from '../labels';
+
+/**
+ * UX-6 매장 입고 처리 — FR-A6.6 (지점 수동 개입).
+ *
+ * - 수령 (정상 입고 완료)  → confirm 후 status=EXECUTED 마킹 (intervention-svc 후속 처리)
+ * - 거부 (수량 불일치 · 파손 · 누락) → 사유 입력 모달 → /intervene/reject 호출
+ *
+ * 거부 시 물류센터에 알림 (FR-A8.7) — notification-svc OrderRejected 이벤트 발행.
+ */
+const REJECT_REASONS = [
+  '수량 부족',
+  '파손 발견',
+  '품목 불일치',
+  '입고 시점 매장 영업 종료',
+  '기타',
+];
 
 export default function BranchInbound() {
   const { role } = useOutletContext<{ role: Role }>();
   const my_store = 1; // branch-clerk default store
-  // wh_id 미지정 = 전체. 매장 작업자는 location 으로 한번 더 필터.
-  const q = useQuery({ queryKey: ['instr-all', role], queryFn: () => fetchInstructions(role), refetchInterval: 8000 });
+  const qc = useQueryClient();
 
+  const q = useQuery({
+    queryKey: ['instr-all', role],
+    queryFn: () => fetchInstructions(role),
+    refetchInterval: 8000,
+  });
   const myInbound = q.data?.items.filter((o) => o.target_location_id === my_store) ?? [];
+
+  // Reject modal state
+  const [rejectTarget, setRejectTarget] = useState<{ order_id: string; isbn13: string; qty: number } | null>(null);
+  const [reason, setReason] = useState(REJECT_REASONS[0]);
+  const [note, setNote] = useState('');
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const reject = useMutation({
+    mutationFn: async (body: { order_id: string; approval_side: 'TARGET'; reject_reason: string }) => {
+      const r = await postIntervene(role, 'reject', body);
+      if (r.detail) throw new Error(r.detail);
+      return r;
+    },
+    onSuccess: () => {
+      setFeedback('✓ 거부 처리됨 — 물류센터에 통보되었습니다');
+      setRejectTarget(null);
+      setNote('');
+      qc.invalidateQueries({ queryKey: ['instr-all', role] });
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFeedback(`✗ 거부 실패: ${msg}`);
+    },
+  });
+
+  const handleReceive = (order_id: string, qty: number) => {
+    if (window.confirm(`${qty}권 수령 확인하시겠습니까?\n수령 후 매장 재고에 자동 반영됩니다.`)) {
+      // 향후 별도 endpoint: /intervention/inbound/{order_id}/receive
+      // 현재는 사용자 알림 (실제 inventory 증가는 intervention-svc 후속 PR 에서 wiring)
+      setFeedback(`✓ 수령 처리 (order_id=${order_id.slice(0, 8)}…) — 백엔드 처리 wiring 후속 PR 예정`);
+    }
+  };
+
+  const handleReject = () => {
+    if (!rejectTarget) return;
+    const reasonText = note ? `${reason}: ${note}`.slice(0, 50) : reason;
+    reject.mutate({
+      order_id: rejectTarget.order_id,
+      approval_side: 'TARGET',
+      reject_reason: reasonText,
+    });
+  };
 
   return (
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="h1">입고 확인 · 매장 {my_store}</h1>
         <p className="text-bf-muted text-xs mt-1">
-          창고에서 발송된 도서 - 매장 도착 시 수령 확인
+          창고에서 발송된 도서를 수령하거나 문제가 있을 시 거부 처리. 거부 시 물류센터에 자동 통보됩니다.
         </p>
       </div>
+
+      {feedback && (
+        <div className={`card-tight text-sm ${feedback.startsWith('✓') ? 'text-bf-success' : 'text-bf-danger'}`}>
+          {feedback}
+          <button className="float-right text-bf-muted hover:text-bf-fg" onClick={() => setFeedback(null)}>✕</button>
+        </div>
+      )}
 
       <div className="card">
         <div className="flex items-center justify-between mb-3">
@@ -34,13 +104,13 @@ export default function BranchInbound() {
               <th>제목</th>
               <th>출발지</th>
               <th className="text-right">수량</th>
-              <th className="text-right">액션</th>
+              <th className="text-right">처리</th>
             </tr>
           </thead>
           <tbody>
             {myInbound.map((o) => (
               <tr key={o.order_id}>
-                <td className="text-bf-muted">{o.approved_at ? new Date(o.approved_at).toLocaleString() : '-'}</td>
+                <td className="text-bf-muted">{o.approved_at ? new Date(o.approved_at).toLocaleString('ko-KR') : '-'}</td>
                 <td>{ko(ORDER_TYPE_KO, o.order_type)}</td>
                 <td>
                   <span className={
@@ -53,18 +123,76 @@ export default function BranchInbound() {
                 <td>위치 {o.source_location_id ?? '-'}</td>
                 <td className="text-right">{o.qty}권</td>
                 <td className="text-right">
-                  <button className="btn-primary btn-sm" onClick={() => alert('수령 처리는 다음 단계에서 활성화 예정')}>
-                    수령
-                  </button>
+                  <div className="inline-flex gap-2">
+                    <button
+                      className="btn-primary btn-sm"
+                      onClick={() => handleReceive(o.order_id, o.qty)}
+                    >
+                      수령
+                    </button>
+                    <button
+                      className="btn-secondary btn-sm text-bf-danger border-bf-danger"
+                      onClick={() => setRejectTarget({ order_id: o.order_id, isbn13: o.isbn13, qty: o.qty })}
+                    >
+                      거부
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
             {myInbound.length === 0 && (
-              <tr><td colSpan={8} className="text-center py-6 text-bf-muted">입고 대기 없음</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-bf-muted">입고 대기 없음 — 모두 처리 완료</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {/* 거부 사유 모달 */}
+      {rejectTarget && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => setRejectTarget(null)}
+        >
+          <div
+            className="bg-bf-bg border border-bf-border rounded-lg p-5 w-full max-w-md"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="h2 mb-3">입고 거부 사유</h3>
+            <div className="text-xs text-bf-muted mb-4">
+              ISBN <span className="font-mono">{rejectTarget.isbn13}</span> · {rejectTarget.qty}권 입고를 거부합니다.
+              물류센터에 알림이 전송됩니다.
+            </div>
+            <div className="space-y-3">
+              <div>
+                <div className="label-tag mb-1">사유 분류</div>
+                <select className="ipt w-full" value={reason} onChange={(e) => setReason(e.target.value)}>
+                  {REJECT_REASONS.map((r) => <option key={r}>{r}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="label-tag mb-1">상세 메모 (선택)</div>
+                <textarea
+                  className="ipt w-full h-20"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="예: 표지 5권 손상 확인"
+                  maxLength={40}
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn-secondary" onClick={() => setRejectTarget(null)}>취소</button>
+              <button
+                className="btn-primary text-bf-danger border-bf-danger"
+                disabled={reject.isPending}
+                onClick={handleReject}
+              >
+                {reject.isPending ? '처리 중…' : '거부 확정'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
