@@ -21,8 +21,11 @@ FR-A6.2 / A5.8 / A3.8 (INACTIVE / SOFT_DISCONTINUE 도서 의사결정 통제):
 """
 import pytest
 
+import math
+
 from src.routes.decision import (
     _auto_execute_eligible,
+    _calc_eoq,
     _check_book_decision_eligibility,
     _effective_available,
     _partner_surplus,
@@ -236,3 +239,51 @@ def test_auto_execute_stage2_critical_not_eligible():
 def test_auto_execute_stage1_normal_not_eligible():
     """Stage 1 + NORMAL → False"""
     assert _auto_execute_eligible(stage_num=1, urgency_level="NORMAL") is False
+
+
+# ─── _calc_eoq (FR-A4.1 경제적 발주량 sqrt(2DS/H)) ───────────────────────────
+# D: annual_demand · S: order_cost (발주 1건 비용) · H: holding_cost (단위당 연간 보관비)
+# 음수/0 입력 → MIN_EOQ 반환 (출판사 정책 최소 발주량 안전망)
+def test_eoq_basic_formula():
+    """D=1000, S=50000, H=500 → EOQ = sqrt(2 * 1000 * 50000 / 500) = sqrt(200000) ≈ 447"""
+    expected = math.sqrt(200000)
+    result = _calc_eoq(annual_demand=1000, order_cost=50000, holding_cost=500)
+    assert abs(result - expected) < 1.0  # rounding tolerance
+
+
+def test_eoq_zero_demand_returns_min():
+    """수요 0 → MIN_EOQ (10) · 발주 안 하는 게 정답이지만 호출되면 최소량"""
+    assert _calc_eoq(annual_demand=0, order_cost=50000, holding_cost=500) == 10
+
+
+def test_eoq_negative_demand_returns_min():
+    """수요 음수 (이상치) → MIN_EOQ"""
+    assert _calc_eoq(annual_demand=-100, order_cost=50000, holding_cost=500) == 10
+
+
+def test_eoq_zero_order_cost_returns_min():
+    """order_cost=0 → division 안전 · MIN_EOQ"""
+    assert _calc_eoq(annual_demand=1000, order_cost=0, holding_cost=500) == 10
+
+
+def test_eoq_zero_holding_cost_returns_min():
+    """holding_cost=0 → division by zero 회피 · MIN_EOQ"""
+    assert _calc_eoq(annual_demand=1000, order_cost=50000, holding_cost=0) == 10
+
+
+def test_eoq_high_demand_low_holding_returns_large_qty():
+    """베스트셀러 시나리오 D=10000, S=50000, H=200 → EOQ = sqrt(5,000,000) ≈ 2236"""
+    expected = math.sqrt(5_000_000)
+    result = _calc_eoq(annual_demand=10000, order_cost=50000, holding_cost=200)
+    assert abs(result - expected) < 1.0
+
+
+def test_eoq_below_min_clamps_to_min():
+    """계산된 EOQ 가 MIN 보다 작으면 MIN 으로 끌어올림 (D=10, S=100, H=10000 → EOQ ≈ 0.45 → MIN)"""
+    assert _calc_eoq(annual_demand=10, order_cost=100, holding_cost=10000) == 10
+
+
+def test_eoq_returns_int():
+    """반환은 정수 (수량 단위) — 소수점 반올림"""
+    result = _calc_eoq(annual_demand=1000, order_cost=50000, holding_cost=500)
+    assert isinstance(result, int)
