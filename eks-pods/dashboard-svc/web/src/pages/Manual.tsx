@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { postInventoryAdjust, type Role } from '../api';
+import InlineMessage from '../components/InlineMessage';
 
 const REASONS = ['파손', '분실', '도난', '입고 누락', '폐기', '기타'];
 
@@ -19,7 +20,7 @@ export default function Manual({ scope }: { scope: 'WH' | 'BRANCH' }) {
     reason: REASONS[0],
     note: '',
   });
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
   const submit = useMutation({
     mutationFn: async () => {
@@ -32,10 +33,13 @@ export default function Manual({ scope }: { scope: 'WH' | 'BRANCH' }) {
       });
     },
     onSuccess: (r) =>
-      setFeedback(`✓ 조정 완료 — 위치 ${r.location_id} · 재고 ${r.on_hand_before} → ${r.on_hand_after}`),
+      setFeedback({
+        type: 'success',
+        msg: `조정 완료 — 위치 ${r.location_id} · 재고 ${r.on_hand_before} → ${r.on_hand_after}`,
+      }),
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
-      setFeedback(`✗ ${msg}`);
+      setFeedback({ type: 'error', msg });
     },
   });
 
@@ -49,9 +53,12 @@ export default function Manual({ scope }: { scope: 'WH' | 'BRANCH' }) {
       </div>
 
       {feedback && (
-        <div className={`card-tight text-xs ${feedback.startsWith('✓') ? 'text-bf-success' : 'text-bf-danger'}`}>
-          {feedback}
-        </div>
+        <InlineMessage
+          type={feedback.type}
+          message={feedback.msg}
+          onClose={() => setFeedback(null)}
+          autoDismissMs={feedback.type === 'success' ? 5000 : undefined}
+        />
       )}
 
       <div className="card">
