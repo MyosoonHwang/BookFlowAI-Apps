@@ -323,6 +323,18 @@ export const postInventoryAdjust = (
   body: { isbn13: string; location_id: number; delta: number; reason: string },
 ) => postJson<InventoryAdjustResult>('/dashboard/inventory/adjust', role, body);
 
+// UX-6: 매장 입고 수령 — intervention-svc /inbound/{order_id}/receive 프록시.
+export type InboundReceiveResult = {
+  order_id: string;
+  status: string;
+  isbn13?: string;
+  qty?: number;
+  inventory_adjust?: 'ADJUSTED' | 'PENDING_ADJUST';
+  detail?: string;
+};
+export const postInboundReceive = (role: Role, order_id: string) =>
+  postJson<InboundReceiveResult>(`/dashboard/inbound/${order_id}/receive`, role, {});
+
 export const postReturnsApprove = (role: Role, body: { return_id: string; note?: string }) =>
   postJson<{ return_id: string; status: string; hq_approved_at: string }>('/dashboard/returns/approve', role, body);
 
