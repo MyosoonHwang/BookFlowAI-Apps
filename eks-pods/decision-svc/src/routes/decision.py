@@ -74,6 +74,28 @@ def _effective_available(
     return on_hand - reserved - incoming - demand
 
 
+def _check_book_decision_eligibility(
+    active: bool,
+    discontinue_mode: str | None,
+) -> tuple[bool, bool]:
+    """FR-A6.2 / A5.8 / A3.8 books 마스터 상태별 의사결정 허용 여부.
+
+    Returns: (allow_decision, allow_publisher_order)
+      - allow_decision=False  → /decide 진입 즉시 400 (어떤 의사결정도 불가)
+      - allow_publisher_order=False → Stage 3 (PUBLISHER_ORDER) 진입 시 400 (재분배·권역이동만)
+
+    규칙:
+      - active=FALSE OR discontinue_mode='INACTIVE' → 모두 차단 (master 비활성)
+      - discontinue_mode='SOFT_DISCONTINUE'        → 재분배·권역이동 OK · 신규 발주 차단 (재고 소진 모드)
+      - 그 외 ('NONE' / NULL / 미상)               → 모두 허용 (정상 도서)
+    """
+    if not active or discontinue_mode == "INACTIVE":
+        return False, False
+    if discontinue_mode == "SOFT_DISCONTINUE":
+        return True, False
+    return True, True
+
+
 def _partner_surplus(
     on_hand: int,
     reserved_qty: int | None,
@@ -276,6 +298,23 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
                     detail=f"본인 창고 외 의사결정 불가 (scope wh_id={ctx.scope_wh_id} · target wh_id={target_wh})",
                 )
 
+            # FR-A6.2 / A5.8 / A3.8 books 마스터 상태 검증
+            cur.execute("SELECT active, discontinue_mode FROM books WHERE isbn13 = %s", (req.isbn13,))
+            book_row = cur.fetchone()
+            if book_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"isbn13 {req.isbn13} books 마스터에 없음",
+                )
+            allow_decision, allow_publisher_order = _check_book_decision_eligibility(
+                book_row[0], book_row[1]
+            )
+            if not allow_decision:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"비활성 도서 (active={book_row[0]} · discontinue_mode={book_row[1]}) 는 의사결정 불가",
+                )
+
             # Cascade
             stage_num: Literal[1, 2, 3]
             order_type: str
@@ -290,6 +329,11 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
                 if stage2_info is not None:
                     stage_num, order_type, source_loc = 2, "WH_TRANSFER", stage2_info["location_id"]
                 else:
+                    if not allow_publisher_order:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"재고 소진 모드 도서 (discontinue_mode={book_row[1]}) 는 신규 출판사 발주 불가 · 권역내 재분배·권역간 이동만 가능",
+                        )
                     stage_num, order_type, source_loc = 3, "PUBLISHER_ORDER", None
 
             urgency, rationale = _calc_urgency(cur, req.isbn13, req.target_location_id, req.qty)
