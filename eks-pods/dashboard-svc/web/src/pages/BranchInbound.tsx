@@ -3,6 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchInstructions, postIntervene, type Role } from '../api';
 import { ko, ORDER_TYPE_KO, URGENCY_KO } from '../labels';
+import ConfirmModal from '../components/ConfirmModal';
+import EmptyState from '../components/EmptyState';
+import HelpHint from '../components/HelpHint';
+import InlineMessage from '../components/InlineMessage';
 
 /**
  * UX-6 매장 입고 처리 — FR-A6.6 (지점 수동 개입).
@@ -36,7 +40,8 @@ export default function BranchInbound() {
   const [rejectTarget, setRejectTarget] = useState<{ order_id: string; isbn13: string; qty: number } | null>(null);
   const [reason, setReason] = useState(REJECT_REASONS[0]);
   const [note, setNote] = useState('');
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const [receiveTarget, setReceiveTarget] = useState<{ order_id: string; qty: number } | null>(null);
 
   const reject = useMutation({
     mutationFn: async (body: { order_id: string; approval_side: 'TARGET'; reject_reason: string }) => {
@@ -45,23 +50,25 @@ export default function BranchInbound() {
       return r;
     },
     onSuccess: () => {
-      setFeedback('✓ 거부 처리됨 — 물류센터에 통보되었습니다');
+      setFeedback({ type: 'success', msg: '거부 처리됨 — 물류센터에 통보되었습니다' });
       setRejectTarget(null);
       setNote('');
       qc.invalidateQueries({ queryKey: ['instr-all', role] });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
-      setFeedback(`✗ 거부 실패: ${msg}`);
+      setFeedback({ type: 'error', msg: `거부 실패: ${msg}` });
     },
   });
 
-  const handleReceive = (order_id: string, qty: number) => {
-    if (window.confirm(`${qty}권 수령 확인하시겠습니까?\n수령 후 매장 재고에 자동 반영됩니다.`)) {
-      // 향후 별도 endpoint: /intervention/inbound/{order_id}/receive
-      // 현재는 사용자 알림 (실제 inventory 증가는 intervention-svc 후속 PR 에서 wiring)
-      setFeedback(`✓ 수령 처리 (order_id=${order_id.slice(0, 8)}…) — 백엔드 처리 wiring 후속 PR 예정`);
-    }
+  const handleReceiveConfirm = () => {
+    if (!receiveTarget) return;
+    // 향후 별도 endpoint: /intervention/inbound/{order_id}/receive
+    setFeedback({
+      type: 'success',
+      msg: `수령 접수 (order ${receiveTarget.order_id.slice(0, 8)}…) — 후속 PR 에서 재고 반영 wiring 예정`,
+    });
+    setReceiveTarget(null);
   };
 
   const handleReject = () => {
@@ -84,15 +91,17 @@ export default function BranchInbound() {
       </div>
 
       {feedback && (
-        <div className={`card-tight text-sm ${feedback.startsWith('✓') ? 'text-bf-success' : 'text-bf-danger'}`}>
-          {feedback}
-          <button className="float-right text-bf-muted hover:text-bf-fg" onClick={() => setFeedback(null)}>✕</button>
-        </div>
+        <InlineMessage
+          type={feedback.type}
+          message={feedback.msg}
+          onClose={() => setFeedback(null)}
+          autoDismissMs={feedback.type === 'success' ? 4000 : undefined}
+        />
       )}
 
       <div className="card">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="h2">입고 대기 ({myInbound.length})</h2>
+          <h2 className="h2 flex items-center">입고 대기 ({myInbound.length})<HelpHint text="물류센터에서 발송된 도서. 정상이면 수령, 수량/품질 문제가 있으면 거부합니다. 거부 사유는 물류센터에 즉시 통보됩니다." /></h2>
         </div>
         <table className="data-table">
           <thead>
@@ -126,7 +135,7 @@ export default function BranchInbound() {
                   <div className="inline-flex gap-2">
                     <button
                       className="btn-primary btn-sm"
-                      onClick={() => handleReceive(o.order_id, o.qty)}
+                      onClick={() => setReceiveTarget({ order_id: o.order_id, qty: o.qty })}
                     >
                       수령
                     </button>
@@ -141,11 +150,23 @@ export default function BranchInbound() {
               </tr>
             ))}
             {myInbound.length === 0 && (
-              <tr><td colSpan={8} className="text-center py-8 text-bf-muted">입고 대기 없음 — 모두 처리 완료</td></tr>
+              <tr><td colSpan={8}>
+                <EmptyState icon="📦" message="입고 대기 없음" hint="모든 발송 건이 수령 또는 거부 처리되었습니다" />
+              </td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {/* 수령 확인 모달 */}
+      <ConfirmModal
+        open={receiveTarget !== null}
+        title="수령 확인"
+        message={receiveTarget ? `${receiveTarget.qty}권 수령을 확인하시겠습니까?\n수령 후 매장 재고에 자동 반영됩니다.` : ''}
+        confirmText="수령 처리"
+        onConfirm={handleReceiveConfirm}
+        onCancel={() => setReceiveTarget(null)}
+      />
 
       {/* 거부 사유 모달 */}
       {rejectTarget && (
