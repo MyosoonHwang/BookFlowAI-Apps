@@ -1,5 +1,5 @@
 """pydantic request/response models matching V3 schema (inventory + reservations tables)."""
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -14,6 +14,11 @@ class InventoryItem(BaseModel):
     safety_stock: int
     available: int  # derived: on_hand - reserved_qty
     updated_at: datetime
+    # FR-A7.4 enrichment
+    title: str | None = None                  # books.title (LEFT JOIN · NULL 가능)
+    expected_soldout_at: date | None = None   # books.expected_soldout_at
+    incoming_qty: int = 0                     # pending_orders APPROVED · target=self · in-transit
+    outgoing_qty: int = 0                     # pending_orders APPROVED · source=self · in-transit
 
 
 class WarehouseInventoryResponse(BaseModel):

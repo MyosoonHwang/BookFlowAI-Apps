@@ -65,16 +65,68 @@ def _check_inventory_write_perm(cur, ctx: AuthContext, location_id: int) -> None
                         detail=f"role '{ctx.role}' 는 inventory 변경 권한 없음")
 
 
+def _inventory_item_from_row(row: tuple) -> InventoryItem:
+    """DB row → InventoryItem 매핑 (FR-A7.4 enriched).
+
+    Row column 순서:
+      0: isbn13
+      1: location_id
+      2: on_hand
+      3: reserved_qty
+      4: safety_stock (NULL → 0 으로 SQL 측 COALESCE 권장 · 모델에서도 안전)
+      5: updated_at
+      6: title (NULL 가능 · books LEFT JOIN)
+      7: expected_soldout_at (NULL 가능)
+      8: incoming_qty (pending_orders APPROVED · target=self · 합)
+      9: outgoing_qty (pending_orders APPROVED · source=self · 합)
+    """
+    return InventoryItem(
+        isbn13=row[0],
+        location_id=row[1],
+        on_hand=int(row[2] or 0),
+        reserved_qty=int(row[3] or 0),
+        safety_stock=int(row[4] or 0),
+        available=int(row[2] or 0) - int(row[3] or 0),
+        updated_at=row[5],
+        title=row[6],
+        expected_soldout_at=row[7],
+        incoming_qty=int(row[8] or 0),
+        outgoing_qty=int(row[9] or 0),
+    )
+
+
 @router.get("/current/{wh_id}", response_model=WarehouseInventoryResponse)
 def get_warehouse_inventory(wh_id: int, ctx: AuthContext = Depends(require_auth)):
+    """FR-A7.4 실시간 재고 조회 — 현재고 + 안전재고 + 예상소진일 + 입출고 in-transit 합산."""
     if ctx.role == "wh-manager" and ctx.scope_wh_id is not None and ctx.scope_wh_id != wh_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="out of warehouse scope")
 
     sql = """
-        SELECT i.isbn13, i.location_id, i.on_hand, i.reserved_qty,
-               COALESCE(i.safety_stock, 0) AS safety_stock, i.updated_at
+        SELECT i.isbn13, i.location_id,
+               i.on_hand, i.reserved_qty,
+               COALESCE(i.safety_stock, 0) AS safety_stock,
+               i.updated_at,
+               b.title,
+               b.expected_soldout_at,
+               COALESCE((
+                   SELECT SUM(po.qty)::int
+                     FROM pending_orders po
+                    WHERE po.target_location_id = i.location_id
+                      AND po.isbn13 = i.isbn13
+                      AND po.status = 'APPROVED'
+                      AND po.executed_at IS NULL
+               ), 0) AS incoming_qty,
+               COALESCE((
+                   SELECT SUM(po.qty)::int
+                     FROM pending_orders po
+                    WHERE po.source_location_id = i.location_id
+                      AND po.isbn13 = i.isbn13
+                      AND po.status = 'APPROVED'
+                      AND po.executed_at IS NULL
+               ), 0) AS outgoing_qty
         FROM inventory i
         JOIN locations l ON l.location_id = i.location_id
+        LEFT JOIN books b ON b.isbn13 = i.isbn13
         WHERE l.wh_id = %s
         ORDER BY i.location_id, i.isbn13
     """
@@ -82,18 +134,7 @@ def get_warehouse_inventory(wh_id: int, ctx: AuthContext = Depends(require_auth)
         cur.execute(sql, (wh_id,))
         rows = cur.fetchall()
 
-    items = [
-        InventoryItem(
-            isbn13=r[0],
-            location_id=r[1],
-            on_hand=r[2],
-            reserved_qty=r[3],
-            safety_stock=r[4],
-            available=r[2] - r[3],
-            updated_at=r[5],
-        )
-        for r in rows
-    ]
+    items = [_inventory_item_from_row(r) for r in rows]
     return WarehouseInventoryResponse(wh_id=wh_id, items=items)
 
 

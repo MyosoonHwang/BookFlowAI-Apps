@@ -16,6 +16,7 @@ Output: DecideResponse (order_id, stage, order_type, source/target, urgency, rat
 """
 import json
 import logging
+import math
 import os
 from datetime import datetime
 from typing import Literal
@@ -40,6 +41,11 @@ NOTIFICATION_SVC_URL = os.environ.get(
     "DECISION_NOTIFICATION_SVC_URL",
     "http://notification-svc.bookflow.svc.cluster.local",
 )
+
+# FR-A4.1 EOQ 상수 (publishers.order_cost / books.holding_cost 컬럼 미존재 → default 사용)
+MIN_EOQ = 10                          # 출판사 최소 발주량 (정책 안전망)
+DEFAULT_ORDER_COST = 50000            # 발주 1건당 비용 (KRW · 운송 + 행정)
+DEFAULT_HOLDING_COST_RATIO = 0.20     # books.price_standard 대비 연간 보관비 비율 (20%)
 
 
 def _get_target_wh(cur, target_location_id: int) -> int:
@@ -72,6 +78,22 @@ def _effective_available(
     incoming = int(incoming_qty or 0)
     demand = max(0, int(expected_demand or 0))
     return on_hand - reserved - incoming - demand
+
+
+def _calc_eoq(annual_demand: float, order_cost: float, holding_cost: float) -> int:
+    """FR-A4.1 경제적 발주량 EOQ = sqrt(2 * D * S / H)
+
+    D: 연간 수요량 — forecast_cache 14일 SUM × (365/14) 또는 sales_realtime extrapolate
+    S: 발주 1건당 비용 — publishers.order_cost 또는 DEFAULT_ORDER_COST
+    H: 단위당 연간 보관비 — books.holding_cost 또는 books.price_standard × DEFAULT_HOLDING_COST_RATIO
+
+    입력 ≤ 0 또는 NaN → MIN_EOQ (출판사 정책 안전망 + division by zero 방어).
+    계산값이 MIN 보다 작으면 MIN 으로 clamp.
+    """
+    if annual_demand <= 0 or order_cost <= 0 or holding_cost <= 0:
+        return MIN_EOQ
+    eoq = math.sqrt(2.0 * annual_demand * order_cost / holding_cost)
+    return max(MIN_EOQ, int(round(eoq)))
 
 
 def _auto_execute_eligible(stage_num: int, urgency_level: str) -> bool:
@@ -245,6 +267,38 @@ def _stage2_source(cur, isbn13: str, target_wh: int, qty: int) -> dict | None:
     }
 
 
+def _annual_demand_for_book(cur, isbn13: str) -> float:
+    """FR-A4.1 EOQ 입력 D 추정 — forecast_cache 14일 SUM × (365/14).
+
+    forecast 데이터 없으면 0.0 (caller MIN_EOQ).
+    """
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(predicted_demand), 0)::float
+          FROM forecast_cache
+         WHERE isbn13 = %s
+           AND snapshot_date >= CURRENT_DATE
+           AND snapshot_date <  CURRENT_DATE + INTERVAL '14 days'
+        """,
+        (isbn13,),
+    )
+    row = cur.fetchone()
+    daily_sum_14d = float(row[0] or 0)
+    return daily_sum_14d * (365.0 / 14.0)
+
+
+def _holding_cost_for_book(cur, isbn13: str) -> float:
+    """FR-A4.1 EOQ 입력 H 추정 — books.price_standard × DEFAULT_HOLDING_COST_RATIO.
+
+    books 미존재 또는 price NULL → 0.0 (caller MIN_EOQ).
+    향후 books.holding_cost 컬럼 추가 시 우선 사용.
+    """
+    cur.execute("SELECT price_standard FROM books WHERE isbn13 = %s", (isbn13,))
+    row = cur.fetchone()
+    price = float(row[0] or 0) if row else 0.0
+    return price * DEFAULT_HOLDING_COST_RATIO
+
+
 def _calc_urgency(cur, isbn13: str, target_location_id: int, qty: int) -> tuple[str, dict]:
     """현재 가용 + forecast_cache 기반 urgency 계산.
 
@@ -364,6 +418,23 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
             if req.note:
                 rationale["note"] = req.note
 
+            # FR-A4.1 EOQ — Stage 3 (PUBLISHER_ORDER) 진입 시 경제적 발주량 산출 후 qty 결정
+            # max(EOQ, req.qty) — 사용자 요청 보장 + 출판사 발주 효율 확보
+            final_qty = req.qty
+            if stage_num == 3:
+                annual_demand = _annual_demand_for_book(cur, req.isbn13)
+                holding_cost = _holding_cost_for_book(cur, req.isbn13)
+                eoq_qty = _calc_eoq(annual_demand, DEFAULT_ORDER_COST, holding_cost)
+                final_qty = max(eoq_qty, req.qty)
+                rationale.update({
+                    "eoq_calc": eoq_qty,
+                    "annual_demand_estimate": annual_demand,
+                    "holding_cost_per_unit": holding_cost,
+                    "order_cost_default": DEFAULT_ORDER_COST,
+                    "final_qty": final_qty,
+                    "final_qty_source": "EOQ" if eoq_qty >= req.qty else "USER_REQUEST",
+                })
+
             # auto_execute_eligible: FR-A4.7 = Stage 3 (PUBLISHER_ORDER) + URGENT/CRITICAL
             # 07:00 KST intervention-svc CronJob 이 auto_execute_eligible=TRUE row 일괄 자동 승인 + 발주
             auto_exec = _auto_execute_eligible(stage_num, urgency)
@@ -378,7 +449,7 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
                 """,
                 (
                     str(order_id), order_type, req.isbn13, source_loc, req.target_location_id,
-                    req.qty, urgency, auto_exec, json.dumps(rationale),
+                    final_qty, urgency, auto_exec, json.dumps(rationale),
                 ),
                 prepare=False,
             )
@@ -390,7 +461,7 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
                 VALUES ('user', %s, 'decision.create', 'pending_orders', %s, %s::jsonb)
                 """,
                 (ctx.user_id, str(order_id), json.dumps({
-                    "order_type": order_type, "isbn13": req.isbn13, "qty": req.qty,
+                    "order_type": order_type, "isbn13": req.isbn13, "qty": final_qty,
                     "urgency": urgency, "stage": stage_num,
                 })),
                 prepare=False,
@@ -412,7 +483,7 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
                     "payload_summary": {
                         "order_id": str(order_id),
                         "isbn13": req.isbn13,
-                        "qty": req.qty,
+                        "qty": final_qty,
                         "urgency_level": urgency,
                         "order_type": order_type,
                         "stage": stage_num,
@@ -428,7 +499,7 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
         stage=stage_num,
         source_location_id=source_loc,
         target_location_id=req.target_location_id,
-        qty=req.qty,
+        qty=final_qty,
         urgency_level=urgency,
         auto_execute_eligible=auto_exec,
         status="PENDING",
