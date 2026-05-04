@@ -13,10 +13,19 @@ FR-A5.3 (Stage 2 partner surplus · 권역간 이동 가능 여유분):
 
 타 권역 WH 가 자기 안전재고 + 14일 예상수요를 보전하고도 보낼 수 있는 양.
 음수면 보낼 수 없음 (자기도 부족).
+
+FR-A6.2 / A5.8 / A3.8 (INACTIVE / SOFT_DISCONTINUE 도서 의사결정 통제):
+  - active=FALSE 또는 discontinue_mode='INACTIVE' → 모든 의사결정 차단 (400)
+  - discontinue_mode='SOFT_DISCONTINUE' → 재분배(Stage 1) + 권역이동(Stage 2) OK · 신규 발주(Stage 3) 차단
+  - 그 외 (active=TRUE + mode IN ('NONE', NULL)) → 모든 단계 허용
 """
 import pytest
 
-from src.routes.decision import _effective_available, _partner_surplus
+from src.routes.decision import (
+    _check_book_decision_eligibility,
+    _effective_available,
+    _partner_surplus,
+)
 
 
 # ─── pure formula tests (FR-A5.1 정의) ──────────────────────────────────
@@ -144,3 +153,46 @@ def test_stage2_source_passes_target_wh_isbn_qty_to_sql():
     assert "9876543210987" in cur.last_params
     assert 2 in cur.last_params
     assert 100 in cur.last_params
+
+
+# ─── _check_book_decision_eligibility (FR-A6.2 / A5.8 / A3.8) ──────────────
+def test_book_eligibility_active_normal_all_allowed():
+    """active=TRUE + discontinue_mode='NONE' → 의사결정 OK · 출판사 발주 OK"""
+    allow_dec, allow_pub = _check_book_decision_eligibility(active=True, discontinue_mode="NONE")
+    assert allow_dec is True
+    assert allow_pub is True
+
+
+def test_book_eligibility_active_mode_null_all_allowed():
+    """discontinue_mode NULL (legacy row) → 'NONE' 과 동일 처리"""
+    allow_dec, allow_pub = _check_book_decision_eligibility(active=True, discontinue_mode=None)
+    assert allow_dec is True
+    assert allow_pub is True
+
+
+def test_book_eligibility_soft_discontinue_blocks_publisher_order():
+    """SOFT_DISCONTINUE → 재분배·권역이동 OK · 신규 발주 차단 (재고 소진 모드)"""
+    allow_dec, allow_pub = _check_book_decision_eligibility(active=True, discontinue_mode="SOFT_DISCONTINUE")
+    assert allow_dec is True
+    assert allow_pub is False
+
+
+def test_book_eligibility_inactive_mode_blocks_all():
+    """discontinue_mode='INACTIVE' → 모든 의사결정 차단"""
+    allow_dec, allow_pub = _check_book_decision_eligibility(active=True, discontinue_mode="INACTIVE")
+    assert allow_dec is False
+    assert allow_pub is False
+
+
+def test_book_eligibility_active_false_blocks_all():
+    """active=FALSE → 어떤 mode 이든 모든 의사결정 차단 (master 비활성)"""
+    allow_dec, allow_pub = _check_book_decision_eligibility(active=False, discontinue_mode="NONE")
+    assert allow_dec is False
+    assert allow_pub is False
+
+
+def test_book_eligibility_active_false_with_inactive_mode_blocks_all():
+    """active=FALSE + INACTIVE 둘 다 → 차단 (양 조건 OR)"""
+    allow_dec, allow_pub = _check_book_decision_eligibility(active=False, discontinue_mode="INACTIVE")
+    assert allow_dec is False
+    assert allow_pub is False
