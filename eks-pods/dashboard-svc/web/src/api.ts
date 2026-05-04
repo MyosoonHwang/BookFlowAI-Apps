@@ -44,6 +44,9 @@ export type PendingOrder = {
   urgency_level: string;
   status: string;
   created_at: string;
+  // decision-svc 가 채운 의사결정 근거 (Stage 1 effective / Stage 2 partner_surplus / Stage 3 EOQ).
+  // intervention-svc /queue 에서 반환 (UX-4 / FR-A5.6).
+  forecast_rationale?: Record<string, unknown> | null;
 };
 
 export const fetchOverview = (whId: number, role: Role) =>
