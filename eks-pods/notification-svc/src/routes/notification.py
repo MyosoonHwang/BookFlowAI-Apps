@@ -29,12 +29,14 @@ router = APIRouter(prefix="/notification", tags=["notification"])
 #   spike.detected    - SNS 급등 도서 (SpikeUrgent 단 1종)
 #   newbook.request   - 출판사 신간 신청 (NewBookRequest 단 1종)
 #
-# 12 events 중 위 3개만 Redis 채널에 publish · 나머지 9개는 Logic Apps webhook 만 호출.
-# (OrderApproved/OrderRejected/AutoExecuted/AutoRejected/StockDepart/StockArrival/Return/LambdaAlarm/Deployment)
+# 시트04 12 + 운영 확장 1 = 13 events.
+# 위 4 종 (Order/Spike/NewBook) 만 Redis 채널 publish, 나머지는 Logic Apps webhook 만.
+# OrderExecuted = 운영 확장 (매장 수령 처리 시점 · 시트04 미정의 · A1 inbound receive 신설).
 EVENT_CHANNEL = {
     "OrderPending":         "order.pending",
     "OrderApproved":        None,
     "OrderRejected":        None,
+    "OrderExecuted":        None,  # A1 매장 수령 (intervention /inbound/receive) — 시트04 외 운영 확장
     "AutoExecutedUrgent":   None,
     "AutoRejectedBatch":    None,
     "SpikeUrgent":          "spike.detected",
