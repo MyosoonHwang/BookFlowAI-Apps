@@ -1,7 +1,22 @@
-// Mock auth state in localStorage. Phase 4: real Entra OIDC swap.
+// Auth · localStorage (mock 버튼) + Entra OIDC cookie (httpOnly bookflow_session) 둘 다 지원.
+// Cookie 우선 — Login.tsx 진입 시 /auth/whoami 호출해서 cookie 유효하면 자동 setRole.
 import { useEffect, useState } from 'react';
 
 export type Role = 'hq-admin' | 'wh-manager-1' | 'wh-manager-2' | 'branch-clerk';
+
+/** /auth/whoami 호출 → cookie 유효시 Role 반환 · 아니면 null */
+export async function fetchSessionRole(): Promise<Role | null> {
+  try {
+    const r = await fetch('/auth/whoami', { credentials: 'include' });
+    if (!r.ok) return null;
+    const j = await r.json();
+    // backend role: 'hq-admin' | 'wh-manager' | 'branch-clerk' (scope_wh_id 로 wh-manager-1/2 분리)
+    if (j.role === 'hq-admin') return 'hq-admin';
+    if (j.role === 'wh-manager') return j.scope_wh_id === 2 ? 'wh-manager-2' : 'wh-manager-1';
+    if (j.role === 'branch-clerk') return 'branch-clerk';
+    return null;
+  } catch { return null; }
+}
 
 const STORAGE_KEY = 'bookflow.role';
 
