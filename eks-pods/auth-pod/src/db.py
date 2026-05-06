@@ -65,12 +65,24 @@ def upsert_user(oid: str, email: str, display_name: str, groups: list[str]) -> d
 
 
 def _map_groups_to_role(groups: list[str]) -> tuple[str, int | None, int | None]:
-    """Entra group → BookFlow role mapping (BF-Admin / BF-HeadQuarter / BF-Logistics / BF-Branch)."""
+    """Entra group (GUID 또는 이름) → BookFlow role 매핑.
+
+    Entra v2 id_token 의 groups claim 은 GUID 로 들어옴. AD hybrid 가 아닌 cloud-only
+    그룹은 displayName claim 미지원 → GUID hard-code 매핑 (entra-setup.sh 가 만든 4 그룹).
+    """
+    # GUID → role (entra-setup.sh 의 4 그룹 · 2026-05-06 확정)
+    GUID_TO_ROLE = {
+        "ead3f58e-8495-4a72-a4d8-9c9d36f5f221": "hq-admin",     # BF-Admin
+        "56ca6f59-176e-4a76-a02b-1d16133075e0": "hq-admin",     # BF-HeadQuarter
+        "71d7084d-a821-456d-9a2c-1389b83b3a5e": "wh-manager",   # BF-Logistics
+        "06c73511-97d8-4995-afac-9746a3503919": "branch-clerk", # BF-Branch
+    }
     g = set(groups)
-    if "BF-Admin" in g or "BF-HeadQuarter" in g:
+    # Hybrid AD 환경에서는 group displayName 도 들어올 수 있어 둘 다 지원
+    if "BF-Admin" in g or "BF-HeadQuarter" in g or any(GUID_TO_ROLE.get(x) == "hq-admin" for x in g):
         return ("hq-admin", None, None)
-    if "BF-Logistics" in g:
-        return ("wh-manager", 1, None)  # 수도권 default · admin 편집 가능
-    if "BF-Branch" in g:
+    if "BF-Logistics" in g or any(GUID_TO_ROLE.get(x) == "wh-manager" for x in g):
+        return ("wh-manager", 1, None)
+    if "BF-Branch" in g or any(GUID_TO_ROLE.get(x) == "branch-clerk" for x in g):
         return ("branch-clerk", None, settings.default_store_id)
     return (settings.default_role, None, settings.default_store_id)
