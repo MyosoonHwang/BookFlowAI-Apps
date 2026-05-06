@@ -451,6 +451,37 @@ def sales_by_specific_store(
     }
 
 
+@router.get("/locations")
+def locations(_: AuthContext = Depends(require_auth)):
+    """UX-9 location 마스터 (id · 이름 · 권역 · 타입). 모든 페이지가 ID → 이름 변환에 사용.
+
+    가벼운 SELECT (heatmap 과 달리 sku/qty 집계 X).
+    """
+    sql = """
+        SELECT location_id, name, location_type, wh_id, region, is_virtual, active
+          FROM locations
+         ORDER BY wh_id NULLS LAST, location_id
+    """
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    return {
+        "items": [
+            {
+                "location_id":   r[0],
+                "name":          r[1],
+                "location_type": r[2],
+                "wh_id":         r[3],
+                "region":        r[4],
+                "is_virtual":    r[5],
+                "active":        r[6],
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/locations/heatmap")
 def inventory_heatmap(_: AuthContext = Depends(require_auth)):
     """전사 재고 히트맵 - location_id 별 SKU 수 + 보유 수량 + 부족(SKU 가용≤10) (HQ Inventory).

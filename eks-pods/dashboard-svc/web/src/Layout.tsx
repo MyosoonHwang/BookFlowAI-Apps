@@ -1,48 +1,49 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { roleLabel, roleGroup, useRole, type Role } from './auth';
 import { useLiveStream } from './useLiveStream';
+import { useLocations } from './useLocations';
 
-type NavItem = { to: string; label: string; allow: 'HQ' | 'WH' | 'BRANCH' | 'ALL' };
+type NavItem = { to: string; label: string; desc: string; allow: 'HQ' | 'WH' | 'BRANCH' | 'ALL' };
 
 const NAV: { section: string; items: NavItem[] }[] = [
   {
-    section: '본사',
+    section: '본사 (전사 관제)',
     items: [
-      { to: '/kpi',         label: '실시간 KPI',       allow: 'HQ' },
-      { to: '/inventory',   label: '전사 재고',         allow: 'HQ' },
-      { to: '/books',       label: '도서 카탈로그',     allow: 'HQ' },
-      { to: '/decision',    label: '의사결정',          allow: 'HQ' },
-      { to: '/approval',    label: '승인 / 거절',       allow: 'HQ' },
-      { to: '/returns',     label: '반품 처리',          allow: 'HQ' },
-      { to: '/requests',    label: '신간 신청',          allow: 'HQ' },
-      { to: '/spikes',      label: '급등 감지',          allow: 'HQ' },
+      { to: '/kpi',         label: '실시간 KPI',       desc: '매출·트랜잭션 5초 갱신',       allow: 'HQ' },
+      { to: '/inventory',   label: '전사 재고',         desc: '14 위치 히트맵 + 이상감지',     allow: 'HQ' },
+      { to: '/books',       label: '도서 카탈로그',     desc: '1000책 · ON/OFF 토글',          allow: 'HQ' },
+      { to: '/decision',    label: '의사결정 발의',     desc: 'ISBN 별 발주/이동 추천',         allow: 'HQ' },
+      { to: '/approval',    label: '발주 승인',         desc: '대기 PUBLISHER_ORDER 처리',     allow: 'HQ' },
+      { to: '/returns',     label: '반품 처리',         desc: '매장 반품 승인',                 allow: 'HQ' },
+      { to: '/requests',    label: '신간 편입 결정',    desc: '출판사 신청 · 권역 분배',        allow: 'HQ' },
+      { to: '/spikes',      label: 'SNS 급등 감지',     desc: '24h z-score 이상치',             allow: 'HQ' },
     ],
   },
   {
-    section: '창고',
+    section: '물류센터 (자기 권역)',
     items: [
-      { to: '/wh-dashboard',    label: '창고 대시보드',  allow: 'WH' },
-      { to: '/wh-approve',      label: '승인 큐',         allow: 'WH' },
-      { to: '/wh-transfer',     label: '권역 이동',       allow: 'WH' },
-      { to: '/wh-instructions', label: '출고 지시서',     allow: 'WH' },
-      { to: '/wh-manual',       label: '수동 조정',       allow: 'WH' },
+      { to: '/wh-dashboard',    label: '권역 대시보드',  desc: '관할 매장 매출 · 재고 히트맵',  allow: 'WH' },
+      { to: '/wh-approve',      label: '승인 큐',         desc: '권역내 PENDING 처리',           allow: 'WH' },
+      { to: '/wh-transfer',     label: '권역 이동',       desc: '창고 간 양측 승인',              allow: 'WH' },
+      { to: '/wh-instructions', label: '출고/입고 지시서', desc: '신간 + 일반 지시 분리',          allow: 'WH' },
+      { to: '/wh-manual',       label: '재고 수동 조정',  desc: '파손·분실 보정',                 allow: 'WH' },
     ],
   },
   {
-    section: '지점',
+    section: '매장 (자기 매장)',
     items: [
-      { to: '/branch-inventory', label: '매장 재고',     allow: 'BRANCH' },
-      { to: '/branch-inbound',   label: '입고 확인',     allow: 'BRANCH' },
-      { to: '/branch-sales',     label: '매장 매출',     allow: 'BRANCH' },
-      { to: '/branch-curation',  label: '큐레이션',      allow: 'BRANCH' },
-      { to: '/branch-manual',    label: '수동 조정',     allow: 'BRANCH' },
+      { to: '/branch-inventory', label: '매장 재고',      desc: '실시간 SKU · 부족 알림',         allow: 'BRANCH' },
+      { to: '/branch-inbound',   label: '입고 확인',      desc: '수령/거부 처리',                 allow: 'BRANCH' },
+      { to: '/branch-sales',     label: '매장 매출',      desc: 'POS 트랜잭션 실시간',            allow: 'BRANCH' },
+      { to: '/branch-curation',  label: '진열 추천',      desc: 'SNS 급등 + 매장 재고 매칭',      allow: 'BRANCH' },
+      { to: '/branch-manual',    label: '재고 수동 조정', desc: '파손·분실 보정',                 allow: 'BRANCH' },
     ],
   },
   {
     section: '공통',
     items: [
-      { to: '/notifications', label: '알림 로그',        allow: 'ALL' },
-      { to: '/live',          label: '실시간 이벤트',     allow: 'ALL' },
+      { to: '/notifications', label: '알림 로그',        desc: '12 events 송신 이력',            allow: 'ALL' },
+      { to: '/live',          label: '실시간 이벤트',    desc: 'WebSocket Redis 4채널',          allow: 'ALL' },
     ],
   },
 ];
@@ -83,6 +84,7 @@ export default function Layout() {
   const nav = useNavigate();
   const loc = useLocation();
   const { status, counts } = useLiveStream(role);
+  const { nameOf } = useLocations(role ?? 'hq-admin');
 
   if (!role) return null;
 
@@ -95,7 +97,13 @@ export default function Layout() {
   const onLogout = () => { setRole(null); nav('/login', { replace: true }); };
   const seg = loc.pathname.split('/').filter(Boolean)[0] ?? 'home';
   const pageTitle = PAGE_LABEL[seg] ?? seg;
-  const groupLabel = group === 'HQ' ? '본사' : group === 'WH' ? '창고' : '지점';
+  const groupLabel = group === 'HQ' ? '본사' : group === 'WH' ? '물류센터' : '매장';
+  // 역할별 scope 표시 (본사 = 전사 / wh = 권역 / branch = 매장명)
+  const scopeLabel =
+    role === 'hq-admin' ? '전사 관제'
+    : role === 'wh-manager-1' ? '수도권 권역'
+    : role === 'wh-manager-2' ? '영남 권역'
+    : role === 'branch-clerk' ? `${nameOf(1)}` : '';
 
   return (
     <div className="min-h-screen bg-bf-bg flex">
@@ -113,15 +121,17 @@ export default function Layout() {
                   <li key={i.to}>
                     <NavLink
                       to={i.to}
+                      title={i.desc}
                       className={({ isActive }) =>
-                        `flex items-center px-5 py-1.5 text-xs border-l-[3px] transition ${
+                        `flex flex-col px-5 py-1.5 border-l-[3px] transition ${
                           isActive
                             ? 'bg-bf-sidebar2 text-white border-bf-primary'
                             : 'text-gray-300 hover:bg-bf-sidebar2 hover:text-white border-transparent'
                         }`
                       }
                     >
-                      {i.label}
+                      <span className="text-xs">{i.label}</span>
+                      <span className="text-[10px] text-gray-500 truncate">{i.desc}</span>
                     </NavLink>
                   </li>
                 ))}
@@ -131,7 +141,8 @@ export default function Layout() {
         </nav>
         <div className="px-5 py-3 border-t border-bf-sidebar2">
           <div className="text-[10px] uppercase tracking-wider text-gray-500">{groupLabel}</div>
-          <div className="text-xs text-white mb-2">{roleLabel(role)}</div>
+          <div className="text-xs text-white">{roleLabel(role)}</div>
+          <div className="text-[10px] text-gray-400 mb-2">{scopeLabel}</div>
           <button onClick={onLogout} className="text-[11px] text-gray-400 hover:text-white">
             로그아웃
           </button>

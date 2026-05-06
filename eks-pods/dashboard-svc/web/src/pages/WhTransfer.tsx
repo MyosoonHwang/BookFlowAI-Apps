@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchPending, type PendingOrder, type Role } from '../api';
 import { ko, ORDER_STATUS_KO, URGENCY_KO, whName } from '../labels';
+import { useLocations } from '../useLocations';
 
 /**
  * 권역 이동 - 2단계 SOURCE/TARGET 이중 승인 시나리오 (.pen C-1~C-4).
@@ -57,11 +58,13 @@ function TransferTable({
   emptyText,
   expandedId,
   onToggle,
+  nameOf,
 }: {
   rows: PendingOrder[];
   emptyText: string;
   expandedId: string | null;
   onToggle: (id: string) => void;
+  nameOf: (id: number | null | undefined) => string;
 }) {
   return (
     <table className="data-table">
@@ -83,7 +86,7 @@ function TransferTable({
                   }>{ko(URGENCY_KO, o.urgency_level)}</span>
                 </td>
                 <td className="font-mono text-[11px]">{o.isbn13}</td>
-                <td>{o.source_location_id ?? '-'} → {o.target_location_id ?? '-'}</td>
+                <td>{nameOf(o.source_location_id)} → {nameOf(o.target_location_id)}</td>
                 <td className="text-right">{o.qty}권</td>
                 <td>
                   <span className={
@@ -114,6 +117,7 @@ export default function WhTransfer() {
   const { role } = useOutletContext<{ role: Role }>();
   const wh = role === 'wh-manager-2' ? 2 : 1;
   const [expanded, setExpanded] = useState<string | null>(null);
+  const { nameOf } = useLocations(role);
 
   const q = useQuery({ queryKey: ['pending-transfer', role], queryFn: () => fetchPending(role, { order_type: 'WH_TRANSFER', limit: 100 }), refetchInterval: 5000 });
 
@@ -138,7 +142,7 @@ export default function WhTransfer() {
             <h2 className="h2">우리 창고가 보낼 항목 ({outbound.length})</h2>
             <span className="text-[10px] text-bf-muted">상대 창고 수락 대기</span>
           </div>
-          <TransferTable rows={outbound} emptyText="발의 건 없음" expandedId={expanded} onToggle={toggle} />
+          <TransferTable rows={outbound} emptyText="발의 건 없음" expandedId={expanded} onToggle={toggle} nameOf={nameOf} />
         </div>
 
         <div className="card">
@@ -146,7 +150,7 @@ export default function WhTransfer() {
             <h2 className="h2">우리 창고가 받을 항목 ({inbound.length})</h2>
             <span className="text-[10px] text-bf-muted">수락하면 운송 시작</span>
           </div>
-          <TransferTable rows={inbound} emptyText="수락 대기 없음" expandedId={expanded} onToggle={toggle} />
+          <TransferTable rows={inbound} emptyText="수락 대기 없음" expandedId={expanded} onToggle={toggle} nameOf={nameOf} />
         </div>
       </div>
     </div>

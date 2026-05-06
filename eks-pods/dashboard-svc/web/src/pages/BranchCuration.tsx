@@ -1,18 +1,20 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchCuration, type Role } from '../api';
+import { useLocations } from '../useLocations';
 
 export default function BranchCuration() {
   const { role } = useOutletContext<{ role: Role }>();
   const my_store = 1;
+  const { nameOf } = useLocations(role);
   const q = useQuery({ queryKey: ['curation', my_store, role], queryFn: () => fetchCuration(role, my_store), refetchInterval: 30000 });
 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">큐레이션 · 매장 {my_store}</h1>
+        <h1 className="h1">{nameOf(my_store)} · 큐레이션 추천</h1>
         <p className="text-bf-muted text-xs mt-1">
-          최근 24시간 급등 도서 + 매장 재고 가용성 · 추천 디스플레이 우선순위
+          최근 24시간 SNS 에서 급등한 도서 중 매장에 재고가 있는 책을 우선 진열하세요. 30초마다 갱신.
         </p>
       </div>
 

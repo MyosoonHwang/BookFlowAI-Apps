@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchOverview, fetchSalesSummary, fetchSalesByStore, fetchRecentSales, type Role } from '../api';
+import { useLocations } from '../useLocations';
 
 export default function KPI() {
   const { role } = useOutletContext<{ role: Role }>();
   const wh_id = 1;
+  const { nameOf } = useLocations(role);
 
   const ov = useQuery({ queryKey: ['ov', wh_id, role], queryFn: () => fetchOverview(wh_id, role), refetchInterval: 5000 });
   const summ = useQuery({ queryKey: ['summ', role], queryFn: () => fetchSalesSummary(role), refetchInterval: 5000 });
@@ -62,7 +64,7 @@ export default function KPI() {
         <div className="space-y-1.5">
           {byStore.data?.items.slice(0, 12).map((s) => (
             <div key={s.store_id} className="flex items-center gap-3">
-              <div className="w-12 text-xs text-bf-muted">매장 {s.store_id}</div>
+              <div className="w-24 text-xs text-bf-muted truncate" title={nameOf(s.store_id)}>{nameOf(s.store_id)}</div>
               <div className="flex-1 h-5 bg-bf-bg rounded relative overflow-hidden">
                 <div
                   className="h-full bg-bf-primary"
@@ -95,7 +97,7 @@ export default function KPI() {
               <tr key={s.txn_id}>
                 <td className="text-bf-muted">{new Date(s.event_ts).toLocaleTimeString()}</td>
                 <td className="font-mono">{s.isbn13}</td>
-                <td>매장 {s.store_id}</td>
+                <td>{nameOf(s.store_id)}</td>
                 <td><span className={s.channel === 'OFFLINE' ? 'pill-info' : 'pill-up'}>{s.channel}</span></td>
                 <td>{s.qty}</td>
                 <td className="text-right">₩{s.revenue.toLocaleString()}</td>

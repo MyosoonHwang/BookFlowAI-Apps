@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchInstructions, type Role } from '../api';
 import { ko, ORDER_TYPE_KO, URGENCY_KO, whName } from '../labels';
+import { useLocations } from '../useLocations';
 
 /**
  * 출고/입고 지시서 — 승인된 pending_orders.
@@ -12,6 +13,7 @@ import { ko, ORDER_TYPE_KO, URGENCY_KO, whName } from '../labels';
 export default function WhInstructions() {
   const { role } = useOutletContext<{ role: Role }>();
   const wh = role === 'wh-manager-2' ? 2 : 1;
+  const { nameOf } = useLocations(role);
   const q = useQuery({ queryKey: ['instr', wh, role], queryFn: () => fetchInstructions(role, wh), refetchInterval: 8000 });
 
   const all = q.data?.items ?? [];
@@ -47,7 +49,7 @@ export default function WhInstructions() {
             )}
             <td className="font-mono text-[11px]">{o.isbn13}</td>
             <td>{o.title ?? '-'}</td>
-            <td>{o.source_location_id ?? '-'} → {o.target_location_id ?? '-'}</td>
+            <td>{nameOf(o.source_location_id)} → {nameOf(o.target_location_id)}</td>
             <td className="text-right">{o.qty}권</td>
             <td>
               <span className={o.status === 'EXECUTED' ? 'pill-info' : 'pill-approved'}>

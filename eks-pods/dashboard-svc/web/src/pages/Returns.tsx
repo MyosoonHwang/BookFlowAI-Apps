@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchReturns, postReturnsApprove, type Role } from '../api';
 import { ko, RETURN_STATUS_KO } from '../labels';
+import { useLocations } from '../useLocations';
 
 const RETURN_REASON_KO: Record<string, string> = {
   CUSTOMER:             '고객 반품',
@@ -16,6 +17,7 @@ export default function Returns() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const { nameOf } = useLocations(role);
 
   const q = useQuery({ queryKey: ['returns', role], queryFn: () => fetchReturns(role, 50), refetchInterval: 8000 });
 
@@ -64,7 +66,7 @@ export default function Returns() {
                 <td className="text-bf-muted">{new Date(r.requested_at).toLocaleString('ko-KR')}</td>
                 <td className="font-mono text-[11px]">{r.isbn13}</td>
                 <td>{r.title ?? '-'}</td>
-                <td>위치 {r.location_id}</td>
+                <td>{nameOf(r.location_id)}</td>
                 <td>{r.qty}권</td>
                 <td className="text-bf-muted">{ko(RETURN_REASON_KO, r.reason)}</td>
                 <td>

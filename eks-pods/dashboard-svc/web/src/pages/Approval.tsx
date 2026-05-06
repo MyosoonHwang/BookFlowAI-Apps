@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchPending, postIntervene, type Role } from '../api';
+import { useLocations } from '../useLocations';
 
 /**
  * HQ Approval - Stage 3 (PUBLISHER_ORDER) 단독 최종 승인.
@@ -12,6 +13,7 @@ export default function Approval() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const { nameOf } = useLocations(role);
 
   // PUBLISHER_ORDER 만 필터 (HQ 가 처리할 외부 발주)
   const pending = useQuery({
@@ -78,7 +80,7 @@ export default function Approval() {
                   }>{o.urgency_level}</span>
                 </td>
                 <td className="font-mono text-[11px]">{o.isbn13}</td>
-                <td>위치 {o.target_location_id ?? '-'}</td>
+                <td>{nameOf(o.target_location_id)}</td>
                 <td>{o.qty}</td>
                 <td className="text-bf-muted">{new Date(o.created_at).toLocaleString()}</td>
                 <td className="text-right">
