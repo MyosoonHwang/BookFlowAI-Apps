@@ -22,6 +22,7 @@ from ..clients import (
     post_intervention_new_book_reject,
     post_intervention_reject,
     post_intervention_returns_approve,
+    post_intervention_returns_reject,
     post_inbound_receive,
     post_inventory_adjust,
     post_notification_send,
@@ -135,6 +136,16 @@ async def inbound_receive(order_id: str, ctx: AuthContext = Depends(require_auth
 async def returns_approve(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
     """반품 승인 (intervention-svc /intervention/returns/approve proxy)."""
     sc, data = await post_intervention_returns_approve(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/returns/reject")
+async def returns_reject(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """A4 (FR-A6.8) 반품 거부 (intervention-svc /intervention/returns/reject proxy).
+
+    body = {return_id, reject_reason}. hq-admin only (intervention-svc 가 검증).
+    """
+    sc, data = await post_intervention_returns_reject(body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
 
 

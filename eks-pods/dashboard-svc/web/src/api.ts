@@ -351,6 +351,14 @@ export const postInboundReceive = (role: Role, order_id: string) =>
 export const postReturnsApprove = (role: Role, body: { return_id: string; note?: string }) =>
   postJson<{ return_id: string; status: string; hq_approved_at: string }>('/dashboard/returns/approve', role, body);
 
+// A4 (FR-A6.8) 본사 마스터 반품 거부 · reject_reason 필수
+export const postReturnsReject = (role: Role, body: { return_id: string; reject_reason: string }) =>
+  postJson<{ return_id: string; status: string; rejected_at: string; reject_reason: string }>(
+    '/dashboard/returns/reject',
+    role,
+    body,
+  );
+
 // UX-2 신간 편입 결정 (.pen HQ Requests 우측 패널)
 export type NewBookForecastHint = {
   request_id: number;

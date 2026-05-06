@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
-import { fetchReturns, postReturnsApprove, type Role } from '../api';
+import { fetchReturns, postReturnsApprove, postReturnsReject, type Role } from '../api';
 import { ko, RETURN_STATUS_KO } from '../labels';
 import { useLocations } from '../useLocations';
 
@@ -21,12 +21,25 @@ export default function Returns() {
 
   const q = useQuery({ queryKey: ['returns', role], queryFn: () => fetchReturns(role, 50), refetchInterval: 8000 });
 
-  const act = useMutation({
+  const approve = useMutation({
     mutationFn: (return_id: string) => postReturnsApprove(role, { return_id }),
     onMutate: (id) => { setBusy(id); setFeedback(null); },
     onSuccess: (d) => {
       setBusy(null);
       setFeedback(`✓ 반품 ${d.return_id} 승인 완료`);
+      qc.invalidateQueries({ queryKey: ['returns'] });
+    },
+    onError: (e) => { setBusy(null); setFeedback(`✗ 실패: ${String(e)}`); },
+  });
+
+  // A4 (FR-A6.8) 본사 마스터 반품 거부 — reject_reason 필수
+  const reject = useMutation({
+    mutationFn: (v: { return_id: string; reject_reason: string }) =>
+      postReturnsReject(role, v),
+    onMutate: (v) => { setBusy(v.return_id); setFeedback(null); },
+    onSuccess: (d) => {
+      setBusy(null);
+      setFeedback(`✓ 반품 ${d.return_id} 거부 (${d.reject_reason})`);
       qc.invalidateQueries({ queryKey: ['returns'] });
     },
     onError: (e) => { setBusy(null); setFeedback(`✗ 실패: ${String(e)}`); },
@@ -79,13 +92,27 @@ export default function Returns() {
                 <td className="text-bf-muted">{r.hq_approved_at ? new Date(r.hq_approved_at).toLocaleString('ko-KR') : '-'}</td>
                 <td className="text-right">
                   {r.status === 'PENDING' && role === 'hq-admin' ? (
-                    <button
-                      className="btn-primary btn-sm"
-                      disabled={busy === r.return_id}
-                      onClick={() => act.mutate(r.return_id)}
-                    >
-                      승인
-                    </button>
+                    <div className="flex gap-1 justify-end">
+                      <button
+                        className="btn-primary btn-sm"
+                        disabled={busy === r.return_id}
+                        onClick={() => approve.mutate(r.return_id)}
+                      >
+                        승인
+                      </button>
+                      <button
+                        className="btn-danger btn-sm"
+                        disabled={busy === r.return_id}
+                        onClick={() => {
+                          const reason = window.prompt('거부 사유? (최대 200자)', '재고 회수 보류');
+                          if (reason && reason.trim()) {
+                            reject.mutate({ return_id: r.return_id, reject_reason: reason.trim() });
+                          }
+                        }}
+                      >
+                        거부
+                      </button>
+                    </div>
                   ) : (
                     <span className="text-[10px] text-bf-muted">-</span>
                   )}
