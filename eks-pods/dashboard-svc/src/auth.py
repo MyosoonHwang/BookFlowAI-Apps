@@ -64,13 +64,14 @@ def _parse_jwt(token_value: str, raw: str) -> AuthContext:
 
 
 def parse_bearer(authorization: str | None, cookie_token: str | None = None) -> AuthContext:
-    # 1) Authorization Bearer header (Pod-to-Pod or curl)
+    # 1) Authorization Bearer header (Pod-to-Pod · curl · SPA mock 버튼)
+    #    mock-token-* 형식이면 항상 mock 처리 (개발 편의 · AUTH_MODE 무관 dual 지원)
     if authorization and authorization.startswith("Bearer "):
         token = authorization.removeprefix("Bearer ").strip()
-        if AUTH_MODE == "mock" and token.startswith("mock-token-"):
+        if token.startswith("mock-token-"):
             return _parse_mock(token, authorization)
         return _parse_jwt(token, authorization)
-    # 2) cookie (browser SPA after Entra login) — promote to Bearer for downstream Pod-to-Pod calls
+    # 2) cookie (browser SPA after Entra OIDC login)
     if cookie_token:
         return _parse_jwt(cookie_token, f"Bearer {cookie_token}")
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token or session cookie")

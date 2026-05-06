@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { setRole, type Role } from '../auth';
+import { fetchSessionRole, setRole, type Role } from '../auth';
 
 const ROLES: { id: Role; label: string; group: string; desc: string }[] = [
   { id: 'hq-admin',     label: '본사 관리자',  group: 'HQ',     desc: 'KPI · Books · Decision · Approval · Returns · Requests' },
@@ -10,11 +11,32 @@ const ROLES: { id: Role; label: string; group: string; desc: string }[] = [
 
 export default function Login() {
   const nav = useNavigate();
+  const [checking, setChecking] = useState(true);
+
+  // Entra OIDC cookie 자동 감지 — bookflow_session 유효시 mock 버튼 안 거치고 자동 진입.
+  useEffect(() => {
+    fetchSessionRole().then((r) => {
+      if (r) {
+        setRole(r);
+        nav('/', { replace: true });
+      } else {
+        setChecking(false);
+      }
+    });
+  }, [nav]);
 
   const onPick = (r: Role) => {
     setRole(r);
     nav('/', { replace: true });
   };
+
+  if (checking) {
+    return (
+      <div className="min-h-screen bg-bf-bg flex items-center justify-center">
+        <div className="text-bf-muted text-sm">세션 확인 중…</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-bf-bg flex items-center justify-center p-6">

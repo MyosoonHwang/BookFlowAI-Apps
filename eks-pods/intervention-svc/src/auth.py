@@ -67,7 +67,7 @@ def require_auth(
 ) -> AuthContext:
     if authorization and authorization.startswith("Bearer "):
         token = authorization.removeprefix("Bearer ").strip()
-        if AUTH_MODE == "mock" and token.startswith("mock-token-"):
+        if token.startswith("mock-token-"):
             return _parse_mock(token, authorization)
         return _parse_jwt(token, authorization)
     if bookflow_session:
