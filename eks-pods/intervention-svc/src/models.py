@@ -61,3 +61,30 @@ class ReturnApproveResponse(BaseModel):
     return_id: UUID
     status: str
     hq_approved_at: datetime
+
+
+class ReturnRejectRequest(BaseModel):
+    """A4 반품 거부 (FR-A6.8 본사 마스터 기각). reject_reason 필수."""
+    return_id: UUID
+    reject_reason: str = Field(min_length=1, max_length=200)
+
+
+class ReturnRejectResponse(BaseModel):
+    return_id: UUID
+    status: str
+    rejected_at: datetime
+    reject_reason: str
+
+
+# ─── A5 ErrorResponse 표준 (intervention-svc pilot) ──────────────────────────
+class ErrorResponse(BaseModel):
+    """전 endpoint 공통 에러 응답 스키마.
+
+    HTTPException 자동 변환 (main.py custom handler) · 클라이언트가 일관된 형식으로 파싱.
+    `error_code` 는 도메인별 상수 (FORBIDDEN / NOT_FOUND / VALIDATION / CONFLICT / INTERNAL).
+    `request_id` 는 요청 추적용 (X-Request-ID header).
+    """
+    error_code: str
+    message: str
+    details: dict | None = None
+    request_id: str | None = None

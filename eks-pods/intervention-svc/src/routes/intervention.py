@@ -36,6 +36,8 @@ from ..models import (
     RejectRequest,
     ReturnApproveRequest,
     ReturnApproveResponse,
+    ReturnRejectRequest,
+    ReturnRejectResponse,
 )
 
 log = logging.getLogger(__name__)
@@ -408,6 +410,50 @@ def returns_approve(req: ReturnApproveRequest, ctx: AuthContext = Depends(requir
     )
 
     return ReturnApproveResponse(return_id=req.return_id, status=row[0], hq_approved_at=row[1])
+
+
+# ─── A4 (FR-A6.8) HQ 반품 거부 ─────────────────────────────────────────────────
+@router.post("/returns/reject", response_model=ReturnRejectResponse)
+def returns_reject(req: ReturnRejectRequest, ctx: AuthContext = Depends(require_auth)):
+    """본사 마스터 반품 기각.
+
+    - 권한: hq-admin only (단일 결정)
+    - 상태 전이: PENDING → REJECTED · rejected_at + reject_reason 채움
+    - 이미 APPROVED/EXECUTED/REJECTED 상태면 404 (재처리 방지)
+    """
+    if ctx.role != "hq-admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="반품 거부는 hq-admin 만 가능")
+
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE returns
+                   SET status = 'REJECTED', rejected_at = NOW(), reject_reason = %s
+                 WHERE return_id = %s AND status = 'PENDING'
+                RETURNING status, rejected_at, reject_reason
+                """,
+                (req.reject_reason, str(req.return_id)),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="return not found or already processed")
+            cur.execute(
+                """
+                INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
+                VALUES ('user', %s, 'intervention.returns.reject', 'returns', %s, %s)
+                """,
+                (ctx.user_id, str(req.return_id), json.dumps({"reject_reason": req.reject_reason})),
+            )
+        conn.commit()
+
+    # Notification: 시트04 미정의이라 audit_log 만 남김 (ReturnRejected 추가 시 _notify 호출 추가)
+    return ReturnRejectResponse(
+        return_id=req.return_id,
+        status=row[0],
+        rejected_at=row[1],
+        reject_reason=row[2],
+    )
 
 
 # ─── New book request approval (HQ Requests page) ─────────────────────────────

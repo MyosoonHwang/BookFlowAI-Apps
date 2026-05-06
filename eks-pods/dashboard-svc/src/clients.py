@@ -120,6 +120,11 @@ async def post_intervention_returns_approve(body: dict, token: str) -> tuple[int
     return await _safe_post(f"{settings.intervention_svc_url}/intervention/returns/approve", body, token)
 
 
+async def post_intervention_returns_reject(body: dict, token: str) -> tuple[int, Any]:
+    """A4 (FR-A6.8) HQ 반품 거부 · body = {return_id, reject_reason}"""
+    return await _safe_post(f"{settings.intervention_svc_url}/intervention/returns/reject", body, token)
+
+
 async def post_intervention_new_book_approve(
     request_id: int, body: dict, token: str
 ) -> tuple[int, Any]:
