@@ -13,7 +13,8 @@ _pool: ConnectionPool | None = None
 def _conninfo() -> str:
     return (
         f"host={settings.rds_host} port={settings.rds_port} "
-        f"dbname={settings.rds_db} user={settings.rds_user} password={settings.rds_password}"
+        f"dbname={settings.rds_db} user={settings.rds_user} password={settings.rds_password} "
+        f"sslmode=require"
     )
 
 

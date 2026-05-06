@@ -10,7 +10,7 @@ data:
   AUTH_JWT_ISSUER: "bookflow-auth-pod"
   AUTH_JWT_AUDIENCE: "bookflow-services"
   AUTH_JWT_TTL_SECONDS: "28800"
-  AUTH_RDS_HOST: "bookflow-rds.cluster-xxxxx.ap-northeast-1.rds.amazonaws.com"
+  AUTH_RDS_HOST: "bookflow-postgres.c5hcctg31h30.ap-northeast-1.rds.amazonaws.com"
   AUTH_RDS_DB: "bookflow"
   AUTH_RDS_USER: "auth_pod"
   AUTH_DEFAULT_ROLE: "branch-clerk"
