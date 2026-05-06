@@ -12,3 +12,6 @@ data:
   INVENTORY_REDIS_PORT: "6379"
   INVENTORY_AUTH_MODE: "mock"
   INVENTORY_LOG_LEVEL: "INFO"
+  AUTH_MODE: "jwt"
+  AUTH_JWT_ISSUER: "bookflow-auth-pod"
+  AUTH_JWT_AUDIENCE: "bookflow-services"

@@ -21,6 +21,15 @@ spec:
   - host: bookflow.duckdns.org
     http:
       paths:
+      # /auth/* → auth-pod (Entra OIDC login/callback/whoami/logout)
+      - path: /auth
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-pod
+            port:
+              number: 80
+      # / → dashboard-svc (BFF + SPA)
       - path: /
         pathType: Prefix
         backend:

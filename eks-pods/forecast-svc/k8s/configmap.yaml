@@ -12,3 +12,6 @@ data:
   FORECAST_REDIS_PORT: "6379"
   FORECAST_AUTH_MODE: "mock"
   FORECAST_LOG_LEVEL: "INFO"
+  AUTH_MODE: "jwt"
+  AUTH_JWT_ISSUER: "bookflow-auth-pod"
+  AUTH_JWT_AUDIENCE: "bookflow-services"

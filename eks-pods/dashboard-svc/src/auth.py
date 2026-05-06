@@ -1,8 +1,19 @@
-"""mock auth — same pattern as inventory/forecast/decision pods.
+"""Dual-mode auth: mock (dev) + JWT (prod · BookFlow internal HS256 issued by auth-pod).
 
-Phase 4: Entra OIDC swap (azure-entra-mock RS256 ready).
+Mode selection via env AUTH_MODE: 'mock' (default) or 'jwt'.
+JWT mode reads:
+  - Authorization: Bearer <token> header, OR
+  - bookflow_session cookie (set by auth-pod /auth/callback)
 """
-from fastapi import Header, HTTPException, status
+import os
+
+import jwt as pyjwt
+from fastapi import Cookie, Header, HTTPException, status
+
+AUTH_MODE = os.environ.get("AUTH_MODE", "mock").lower()
+JWT_SIGNING_KEY = os.environ.get("AUTH_JWT_SIGNING_KEY", "")
+JWT_ISSUER = os.environ.get("AUTH_JWT_ISSUER", "bookflow-auth-pod")
+JWT_AUDIENCE = os.environ.get("AUTH_JWT_AUDIENCE", "bookflow-services")
 
 ROLE_USERS = {
     "hq-admin":     ("00000000-0000-0000-0000-000000000001", "hq-admin",     None, None),
@@ -23,29 +34,57 @@ class AuthContext:
         self.token = token
 
 
-def parse_bearer(authorization: str | None) -> AuthContext:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if not token.startswith("mock-token-"):
+def _parse_mock(token_value: str, raw: str) -> AuthContext:
+    if not token_value.startswith("mock-token-"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="non-mock token")
-    role_key = token.removeprefix("mock-token-")
+    role_key = token_value.removeprefix("mock-token-")
     user = ROLE_USERS.get(role_key)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"unknown role: {role_key}")
-    return AuthContext(*user, token=authorization)
+    return AuthContext(*user, token=raw)
 
 
-def require_auth(authorization: str | None = Header(default=None)) -> AuthContext:
-    return parse_bearer(authorization)
+def _parse_jwt(token_value: str, raw: str) -> AuthContext:
+    if not JWT_SIGNING_KEY:
+        raise HTTPException(status_code=503, detail="auth misconfigured: JWT key missing")
+    try:
+        claims = pyjwt.decode(
+            token_value, JWT_SIGNING_KEY, algorithms=["HS256"],
+            audience=JWT_AUDIENCE, issuer=JWT_ISSUER,
+        )
+    except pyjwt.PyJWTError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"invalid jwt: {e}")
+    return AuthContext(
+        user_id=claims["sub"],
+        role=claims["role"],
+        scope_wh_id=claims.get("scope_wh_id"),
+        scope_store_id=claims.get("scope_store_id"),
+        token=raw,
+    )
+
+
+def parse_bearer(authorization: str | None, cookie_token: str | None = None) -> AuthContext:
+    # 1) Authorization Bearer header (Pod-to-Pod or curl)
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        if AUTH_MODE == "mock" and token.startswith("mock-token-"):
+            return _parse_mock(token, authorization)
+        return _parse_jwt(token, authorization)
+    # 2) cookie (browser SPA after Entra login) — promote to Bearer for downstream Pod-to-Pod calls
+    if cookie_token:
+        return _parse_jwt(cookie_token, f"Bearer {cookie_token}")
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token or session cookie")
+
+
+def require_auth(
+    authorization: str | None = Header(default=None),
+    bookflow_session: str | None = Cookie(default=None),
+) -> AuthContext:
+    return parse_bearer(authorization, bookflow_session)
 
 
 def _check_store_scope(ctx: AuthContext, store_id: int) -> None:
-    """FR-A7.3 branch-clerk 매장 스코프 enforce.
-
-    매장 단위 endpoint 진입 시 호출 — branch-clerk 가 자기 매장 외 store_id 조회 시 403.
-    hq-admin / wh-manager 는 전사 / 권역 + 타 센터 read 권한 (FR-A7.1 · A7.2) → 통과.
-    """
+    """FR-A7.3 branch-clerk 매장 스코프 enforce."""
     if ctx.role == "branch-clerk":
         if ctx.scope_store_id is None:
             raise HTTPException(
