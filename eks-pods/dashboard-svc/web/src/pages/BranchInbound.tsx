@@ -7,6 +7,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import EmptyState from '../components/EmptyState';
 import HelpHint from '../components/HelpHint';
 import InlineMessage from '../components/InlineMessage';
+import { useLocations } from '../useLocations';
 
 /**
  * UX-6 매장 입고 처리 — FR-A6.6 (지점 수동 개입).
@@ -28,6 +29,7 @@ export default function BranchInbound() {
   const { role } = useOutletContext<{ role: Role }>();
   const my_store = 1; // branch-clerk default store
   const qc = useQueryClient();
+  const { nameOf } = useLocations(role);
 
   const q = useQuery({
     queryKey: ['instr-all', role],
@@ -100,9 +102,10 @@ export default function BranchInbound() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">입고 확인 · 매장 {my_store}</h1>
+        <h1 className="h1">{nameOf(my_store)} · 입고 확인</h1>
         <p className="text-bf-muted text-xs mt-1">
-          창고에서 발송된 도서를 수령하거나 문제가 있을 시 거부 처리. 거부 시 물류센터에 자동 통보됩니다.
+          물류센터에서 발송된 도서가 매장에 도착했을 때 처리하는 화면입니다.
+          정상이면 <b>수령</b>, 수량/품질 문제가 있으면 <b>거부</b> 후 사유를 입력하면 물류센터에 즉시 통보됩니다.
         </p>
       </div>
 
@@ -145,7 +148,7 @@ export default function BranchInbound() {
                 </td>
                 <td className="font-mono text-[11px]">{o.isbn13}</td>
                 <td>{o.title ?? '-'}</td>
-                <td>위치 {o.source_location_id ?? '-'}</td>
+                <td>{o.source_location_id != null ? nameOf(o.source_location_id) : '-'}</td>
                 <td className="text-right">{o.qty}권</td>
                 <td className="text-right">
                   <div className="inline-flex gap-2">

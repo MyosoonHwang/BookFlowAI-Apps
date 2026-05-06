@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { postInventoryAdjust, type Role } from '../api';
 import InlineMessage from '../components/InlineMessage';
+import { useLocations } from '../useLocations';
 
 const REASONS = ['파손', '분실', '도난', '입고 누락', '폐기', '기타'];
 
@@ -21,6 +22,10 @@ export default function Manual({ scope }: { scope: 'WH' | 'BRANCH' }) {
     note: '',
   });
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const { items: locItems, nameOf } = useLocations(role);
+  const locOptions = locItems.filter((l) =>
+    isWh ? l.location_type === 'WH' : l.location_type !== 'WH'
+  );
 
   const submit = useMutation({
     mutationFn: async () => {
@@ -35,7 +40,7 @@ export default function Manual({ scope }: { scope: 'WH' | 'BRANCH' }) {
     onSuccess: (r) =>
       setFeedback({
         type: 'success',
-        msg: `조정 완료 — 위치 ${r.location_id} · 재고 ${r.on_hand_before} → ${r.on_hand_after}`,
+        msg: `조정 완료 — ${nameOf(r.location_id)} · 재고 ${r.on_hand_before} → ${r.on_hand_after}`,
       }),
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
@@ -76,13 +81,18 @@ export default function Manual({ scope }: { scope: 'WH' | 'BRANCH' }) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="label-tag mb-1">위치 ID</div>
-              <input
+              <div className="label-tag mb-1">{isWh ? '창고' : '매장'}</div>
+              <select
                 className="ipt w-full"
-                type="number"
                 value={form.location_id}
                 onChange={(e) => setForm({ ...form, location_id: Number(e.target.value) })}
-              />
+              >
+                {locOptions.map((l) => (
+                  <option key={l.location_id} value={l.location_id}>
+                    {l.name ?? `위치 ${l.location_id}`}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <div className="label-tag mb-1">변동 수량 (음수=감소)</div>

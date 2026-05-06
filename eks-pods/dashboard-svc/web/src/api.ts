@@ -323,6 +323,19 @@ export const postInventoryAdjust = (
   body: { isbn13: string; location_id: number; delta: number; reason: string },
 ) => postJson<InventoryAdjustResult>('/dashboard/inventory/adjust', role, body);
 
+// UX-9: location 마스터 — 모든 페이지에서 ID → 이름 변환에 사용.
+export type LocationItem = {
+  location_id: number;
+  name: string | null;
+  location_type: string | null;
+  wh_id: number | null;
+  region: string | null;
+  is_virtual?: boolean;
+  active?: boolean;
+};
+export const fetchLocations = (role: Role) =>
+  getJson<{ items: LocationItem[] }>('/dashboard/locations', role);
+
 // UX-6: 매장 입고 수령 — intervention-svc /inbound/{order_id}/receive 프록시.
 export type InboundReceiveResult = {
   order_id: string;

@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchOverview, type Role } from '../api';
+import { useLocations } from '../useLocations';
 
 export default function BranchInventory() {
   const { role } = useOutletContext<{ role: Role }>();
   // branch-clerk - default WH 1 인근 매장 (location_id 1)
   const wh_id = 1;
   const my_store = 1;
+  const { nameOf } = useLocations(role);
 
   const ov = useQuery({ queryKey: ['ov', wh_id, role], queryFn: () => fetchOverview(wh_id, role), refetchInterval: 5000 });
 
@@ -20,8 +22,8 @@ export default function BranchInventory() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">매장 재고 (매장 {my_store})</h1>
-        <p className="text-bf-muted text-xs mt-1">실시간 재고 현황 · POS 판매 시 즉시 감소 (pos-ingestor Lambda)</p>
+        <h1 className="h1">{nameOf(my_store)} · 매장 재고</h1>
+        <p className="text-bf-muted text-xs mt-1">현재 보유한 도서 SKU와 가용량 — POS 판매 시 자동 감소 (pos-ingestor Lambda)</p>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { fetchSalesBySpecificStore, type Role } from '../api';
+import { useLocations } from '../useLocations';
 
 export default function BranchSales() {
   const { role } = useOutletContext<{ role: Role }>();
   const [storeId, setStoreId] = useState(1);
+  const { items: locItems, nameOf } = useLocations(role);
 
   const q = useQuery({
     queryKey: ['sales-store', storeId, role],
@@ -16,21 +18,24 @@ export default function BranchSales() {
   const items = q.data?.items ?? [];
   const totalRev = items.reduce((s, x) => s + x.revenue, 0);
   const onlineCount = items.filter((x) => x.channel.startsWith('ONLINE')).length;
+  const storeOptions = locItems.filter((l) => l.location_type !== 'WH' && l.active !== false);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="h1">매장 매출</h1>
+          <h1 className="h1">{nameOf(storeId)} · 매출</h1>
           <p className="text-bf-muted text-xs mt-1">
-            매장 별 POS 트랜잭션 실시간 흐름 · 3초 자동 갱신 (pos-ingestor Lambda)
+            매장에서 POS 로 결제된 트랜잭션이 실시간 (3초) 으로 흐르는 화면입니다.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="label-tag">매장</span>
+          <span className="label-tag">매장 선택</span>
           <select className="ipt" value={storeId} onChange={(e) => setStoreId(Number(e.target.value))}>
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => (
-              <option key={n} value={n}>매장 {n}{n >= 11 ? ' (온라인)' : ''}</option>
+            {storeOptions.map((l) => (
+              <option key={l.location_id} value={l.location_id}>
+                {l.name ?? `매장 ${l.location_id}`}{l.location_type === 'STORE_ONLINE' ? ' (온라인)' : ''}
+              </option>
             ))}
           </select>
         </div>
