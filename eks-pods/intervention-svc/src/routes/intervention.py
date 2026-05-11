@@ -186,8 +186,9 @@ def grouped(
       - by_type: order_type 별 PENDING 분포
       - items: PENDING list (사용자가 처리할 것 우선 정렬)
     """
-    from datetime import date as _date
-    target_date = date or _date.today().isoformat()
+    from datetime import datetime as _dt, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    target_date = date or _dt.now(KST).date().isoformat()
 
     # role-scope WHERE
     scope_clauses = []
@@ -206,7 +207,7 @@ def grouped(
 
     scope_sql = (" AND " + " AND ".join(scope_clauses)) if scope_clauses else ""
 
-    with db_cursor() as cur:
+    with db_conn() as conn, conn.cursor() as cur:
         # 1. 07:00 batch 가 오늘 자동 승인한 건수 (URGENT/CRITICAL + auto_execute_eligible + approved_at::date = target)
         cur.execute(
             f"""
