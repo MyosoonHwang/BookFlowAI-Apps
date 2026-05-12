@@ -24,13 +24,18 @@ function fmt(v: unknown): string {
 function RationaleDetail({ r, qty }: { r: Rationale; qty: number }) {
   const stage = r.stage as number | undefined;
   const partnerSurplus = r.partner_surplus as number | undefined;
+  const hasPartner = stage === 2 && r.partner_wh != null;
+  const ratio = r.ratio as number | undefined;
+  const reason = r.reason as string | undefined;
   return (
     <div className="bg-bf-card border border-bf-border rounded-md p-3 text-xs">
       <div className="flex items-baseline justify-between mb-2">
-        <div className="text-bf-fg font-semibold">의사결정 근거 (Stage {stage ?? '?'})</div>
+        <div className="text-bf-fg font-semibold">
+          의사결정 근거 {stage ? `· Stage ${stage}` : '· 권역 간 이동'}
+        </div>
         <div className="text-bf-muted">요청 수량 {qty.toLocaleString()}권</div>
       </div>
-      {stage === 2 && (
+      {hasPartner ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           <div><div className="text-bf-muted text-[10px]">출발 권역</div><div className="font-mono">{whName((r.partner_wh as number) ?? 0)}</div></div>
           <div><div className="text-bf-muted text-[10px]">출발 보유</div><div className="font-mono">{fmt(r.partner_on_hand)}</div></div>
@@ -41,9 +46,11 @@ function RationaleDetail({ r, qty }: { r: Rationale; qty: number }) {
           <div><div className="text-bf-muted text-[10px]">이전 가능</div><div className="font-mono">{fmt(r.transferable_qty)}</div></div>
           <div><div className="text-bf-muted text-[10px]">출발 위치 ID</div><div className="font-mono">{fmt(r.source_location_id)}</div></div>
         </div>
-      )}
-      {stage !== 2 && (
-        <div className="text-bf-muted">Stage {stage ?? '?'} · partner 정보 없음 (Stage 2 권역간 이동만 표시)</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {reason && <div><div className="text-bf-muted text-[10px]">발의 사유</div><div className="font-medium">{reason}</div></div>}
+          {typeof ratio === 'number' && <div><div className="text-bf-muted text-[10px]">권역 균형 비율</div><div className="font-mono">{(ratio * 100).toFixed(0)}%</div></div>}
+        </div>
       )}
       {typeof r.stock_days_remaining === 'number' && (
         <div className="mt-2 pt-2 border-t border-bf-border text-bf-muted text-[11px]">
