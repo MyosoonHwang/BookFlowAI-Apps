@@ -53,21 +53,23 @@ def insufficient_stock(
     fallback: forecast_cache 비어있으면 빈 list 반환.
     suggested_qty = gap + 안전재고 buffer (gap × 1.2, min 30, max 200).
     """
+    # inventory 테이블에 available 컬럼 없음 — GREATEST(on_hand - reserved_qty, 0) 직접 계산
+    # (또는 v_inventory_available view 사용 가능하지만 LEFT JOIN 안 매치 도서 처리 위해 inline)
     sql = """
         WITH latest AS (
             SELECT MAX(snapshot_date) AS d FROM forecast_cache
         )
         SELECT f.isbn13, b.title, f.store_id,
                f.predicted_demand,
-               COALESCE(SUM(i.available), 0)::int AS available
+               COALESCE(SUM(GREATEST(i.on_hand - i.reserved_qty, 0)), 0)::int AS available
           FROM forecast_cache f
           LEFT JOIN books b ON b.isbn13 = f.isbn13
           LEFT JOIN inventory i ON i.isbn13 = f.isbn13 AND i.location_id = f.store_id
           CROSS JOIN latest
          WHERE f.snapshot_date = latest.d
          GROUP BY f.isbn13, b.title, f.store_id, f.predicted_demand
-        HAVING f.predicted_demand > COALESCE(SUM(i.available), 0)
-         ORDER BY (f.predicted_demand - COALESCE(SUM(i.available), 0)) DESC
+        HAVING f.predicted_demand > COALESCE(SUM(GREATEST(i.on_hand - i.reserved_qty, 0)), 0)
+         ORDER BY (f.predicted_demand - COALESCE(SUM(GREATEST(i.on_hand - i.reserved_qty, 0)), 0)) DESC
          LIMIT %s
     """
     with db_conn() as conn, conn.cursor() as cur:
