@@ -53,27 +53,30 @@ def insufficient_stock(
     fallback: forecast_cache 비어있으면 빈 list 반환.
     suggested_qty = gap + 안전재고 buffer (gap × 1.2, min 30, max 200).
     """
+    # 시연 의도: '익일 (CURRENT_DATE + 1) 지점·물류센터별 수요예측 vs 현재 가용재고' 비교.
+    # - 현재 가용재고: GREATEST(inventory.on_hand - reserved_qty, 0) (inventory.available 컬럼 부재)
+    # - 익일 forecast: snapshot_date = MIN(snapshot_date > CURRENT_DATE) (= 가장 가까운 미래일)
     sql = """
-        WITH latest AS (
-            SELECT MAX(snapshot_date) AS d FROM forecast_cache
+        WITH target AS (
+            SELECT MIN(snapshot_date) AS d FROM forecast_cache WHERE snapshot_date > CURRENT_DATE
         )
         SELECT f.isbn13, b.title, f.store_id,
                f.predicted_demand,
-               COALESCE(SUM(i.available), 0)::int AS available
+               COALESCE(SUM(GREATEST(i.on_hand - i.reserved_qty, 0)), 0)::int AS available
           FROM forecast_cache f
           LEFT JOIN books b ON b.isbn13 = f.isbn13
           LEFT JOIN inventory i ON i.isbn13 = f.isbn13 AND i.location_id = f.store_id
-          CROSS JOIN latest
-         WHERE f.snapshot_date = latest.d
+          CROSS JOIN target
+         WHERE f.snapshot_date = target.d
          GROUP BY f.isbn13, b.title, f.store_id, f.predicted_demand
-        HAVING f.predicted_demand > COALESCE(SUM(i.available), 0)
-         ORDER BY (f.predicted_demand - COALESCE(SUM(i.available), 0)) DESC
+        HAVING f.predicted_demand > COALESCE(SUM(GREATEST(i.on_hand - i.reserved_qty, 0)), 0)
+         ORDER BY (f.predicted_demand - COALESCE(SUM(GREATEST(i.on_hand - i.reserved_qty, 0)), 0)) DESC
          LIMIT %s
     """
     with db_conn() as conn, conn.cursor() as cur:
         cur.execute(sql, (limit,))
         rows = cur.fetchall()
-        cur.execute("SELECT MAX(snapshot_date) FROM forecast_cache")
+        cur.execute("SELECT MIN(snapshot_date) FROM forecast_cache WHERE snapshot_date > CURRENT_DATE")
         snapshot = cur.fetchone()[0]
 
     items: list[InsufficientStockItem] = []
