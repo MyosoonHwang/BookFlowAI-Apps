@@ -51,12 +51,12 @@ fi
 #   "LOG_LEVEL": "INFO"
 # }
 SECRET_NAME="bookflow/publisher-api"
-if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
-  aws secretsmanager get-secret-value \
-    --secret-id "$SECRET_NAME" \
-    --query SecretString \
-    --output text \
-  | "$VENV/bin/python3" -c "
+SECRET_JSON=$(aws secretsmanager get-secret-value \
+  --secret-id "$SECRET_NAME" \
+  --query SecretString \
+  --output text 2>/dev/null || true)
+if [ -n "$SECRET_JSON" ]; then
+  echo "$SECRET_JSON" | "$VENV/bin/python3" -c "
 import sys, json
 d = json.load(sys.stdin)
 for k, v in d.items():
@@ -88,11 +88,15 @@ fi
 if [ -f "$APP_DIR/backend/migration.sql" ]; then
   set -a; source "$ENV_FILE"; set +a
   if "$VENV/bin/python3" -c "
-import psycopg, sys
+import psycopg, sys, os
 try:
     conn = psycopg.connect(
-        f'host={RDS_HOST} port={RDS_PORT} dbname={RDS_DB} '
-        f'user={RDS_USER} password={RDS_PASSWORD} sslmode=require',
+        host=os.environ['RDS_HOST'],
+        port=os.environ.get('RDS_PORT', '5432'),
+        dbname=os.environ.get('RDS_DB', 'bookflow'),
+        user=os.environ['RDS_USER'],
+        password=os.environ['RDS_PASSWORD'],
+        sslmode='require',
         connect_timeout=5
     )
     with open('$APP_DIR/backend/migration.sql') as f:
@@ -102,7 +106,7 @@ try:
     print('migration.sql applied')
 except Exception as e:
     print(f'migration skipped: {e}', file=sys.stderr)
-    sys.exit(0)   # 마이그레이션 실패가 배포를 막지 않도록 0 반환
+    sys.exit(0)
 " 2>&1; then
     echo "DB migration completed"
   else
