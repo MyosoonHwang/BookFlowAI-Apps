@@ -619,51 +619,261 @@ def reject(req: RejectRequest, ctx: AuthContext = Depends(require_auth)):
     return ApprovalResponse(approval_id=aid, order_id=req.order_id, decision="REJECTED", decided_at=decided_at)
 
 
+def _check_authority_rules(ctx: AuthContext, meta: dict, side: str) -> None:
+    """`_validate_authority` 의 in-memory 변종. 이미 fetch 된 order meta 로 권한 검증.
+
+    Raises HTTPException on violation. meta = {order_type, source_wh, target_wh, target_loc}.
+    """
+    order_type = meta["order_type"]
+    source_wh = meta["source_wh"]
+    target_wh = meta["target_wh"]
+    target_loc = meta["target_loc"]
+
+    if order_type == "REBALANCE":
+        if side != "FINAL":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="REBALANCE 는 approval_side='FINAL' 만")
+        if ctx.role == "hq-admin":
+            return
+        if ctx.role == "branch-clerk":
+            if ctx.scope_store_id is None or ctx.scope_store_id != target_loc:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"자기 매장만 (scope={ctx.scope_store_id}/target={target_loc})")
+            return
+        if ctx.role != "wh-manager" or ctx.scope_wh_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="REBALANCE 권한 없음")
+        if ctx.scope_wh_id not in (source_wh, target_wh):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"본인 창고 외 (scope={ctx.scope_wh_id}/order={source_wh}/{target_wh})")
+    elif order_type == "WH_TRANSFER":
+        if side not in ("SOURCE", "TARGET"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="WH_TRANSFER 는 SOURCE/TARGET 만")
+        if ctx.role == "hq-admin":
+            return
+        if ctx.role != "wh-manager" or ctx.scope_wh_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="WH_TRANSFER 권한 없음")
+        my_side_wh = source_wh if side == "SOURCE" else target_wh
+        if ctx.scope_wh_id != my_side_wh:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"{side} 권한 없음 (scope={ctx.scope_wh_id}/side={my_side_wh})")
+    elif order_type == "PUBLISHER_ORDER":
+        if side != "FINAL":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PUBLISHER_ORDER 는 FINAL 만")
+        if ctx.role == "hq-admin":
+            return
+        if ctx.role == "wh-manager" and ctx.scope_wh_id == target_wh:
+            return
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="PUBLISHER_ORDER 권한 없음")
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"unknown order_type: {order_type}")
+
+
+def _bulk_record_approvals(conn, valid_items: list[dict], ctx: AuthContext, decision: str) -> None:
+    """N items 한 transaction 으로 INSERT/UPDATE order_approvals + UPDATE pending_orders + 1 audit_log."""
+    cur = conn.cursor()
+
+    # 1) 기존 approval 조회 (order_id, side 동일 페어 → UPDATE 분기)
+    pairs_oid = [it["order_id"] for it in valid_items]
+    pairs_side = [it["side"] for it in valid_items]
+    cur.execute(
+        """
+        SELECT order_id::text, approval_side, approval_id::text
+          FROM order_approvals
+         WHERE (order_id::text, approval_side) IN (
+               SELECT * FROM UNNEST(%s::text[], %s::varchar[])
+         )
+        """,
+        (pairs_oid, pairs_side),
+    )
+    existing = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+
+    inserts: list[tuple] = []
+    updates: list[tuple] = []
+    for it in valid_items:
+        key = (it["order_id"], it["side"])
+        rej = it.get("reject_reason")
+        if key in existing:
+            updates.append((ctx.user_id, ctx.role, ctx.scope_wh_id, decision, rej, existing[key]))
+        else:
+            inserts.append((str(uuid4()), it["order_id"], ctx.user_id, ctx.role, ctx.scope_wh_id, it["side"], decision, rej))
+
+    # 2) Bulk INSERT
+    if inserts:
+        cur.executemany(
+            """
+            INSERT INTO order_approvals
+                (approval_id, order_id, approver_id, approver_role, approver_wh_id,
+                 approval_side, decision, reject_reason)
+            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)
+            """,
+            inserts,
+        )
+
+    # 3) Bulk UPDATE existing
+    if updates:
+        cur.executemany(
+            """
+            UPDATE order_approvals
+               SET approver_id = %s, approver_role = %s, approver_wh_id = %s,
+                   decision = %s, reject_reason = %s, decided_at = NOW()
+             WHERE approval_id = %s::uuid
+            """,
+            updates,
+        )
+
+    # 4) pending_orders status 일괄 전환
+    if decision == "APPROVED":
+        # REBALANCE / PUBLISHER_ORDER FINAL → 즉시 APPROVED
+        final_oids = list({it["order_id"] for it in valid_items if it["side"] == "FINAL"})
+        if final_oids:
+            cur.execute(
+                """
+                UPDATE pending_orders
+                   SET status = 'APPROVED', approved_at = NOW()
+                 WHERE order_id = ANY(%s::uuid[])
+                   AND status NOT IN ('APPROVED', 'EXECUTED', 'AUTO_EXECUTED')
+                """,
+                (final_oids,),
+            )
+        # WH_TRANSFER SOURCE+TARGET 양측 APPROVED → APPROVED
+        wh_oids = list({it["order_id"] for it in valid_items if it["side"] in ("SOURCE", "TARGET")})
+        if wh_oids:
+            cur.execute(
+                """
+                UPDATE pending_orders po
+                   SET status = 'APPROVED', approved_at = NOW()
+                 WHERE po.order_id = ANY(%s::uuid[])
+                   AND po.status NOT IN ('APPROVED', 'EXECUTED', 'AUTO_EXECUTED')
+                   AND (SELECT COUNT(*) FROM order_approvals oa
+                         WHERE oa.order_id = po.order_id
+                           AND oa.decision = 'APPROVED'
+                           AND oa.approval_side IN ('SOURCE', 'TARGET')) >= 2
+                """,
+                (wh_oids,),
+            )
+    else:  # REJECTED
+        # 어느 side 든 REJECTED → 전체 order REJECTED + reject_count++ (per order 1회)
+        rej_map: dict[str, str | None] = {}
+        for it in valid_items:
+            rej_map.setdefault(it["order_id"], it.get("reject_reason"))
+        if rej_map:
+            cur.executemany(
+                """
+                UPDATE pending_orders
+                   SET status = 'REJECTED', reject_reason = %s, reject_count = reject_count + 1
+                 WHERE order_id = %s::uuid
+                   AND status NOT IN ('REJECTED', 'EXECUTED')
+                """,
+                [(reason, oid) for oid, reason in rej_map.items()],
+            )
+
+    # 5) 단일 batch audit_log row
+    cur.execute(
+        """
+        INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
+        VALUES ('user', %s, %s, 'pending_orders', %s, %s::jsonb)
+        """,
+        (
+            ctx.user_id,
+            f"intervention.batch_{decision.lower()}",
+            valid_items[0]["order_id"],  # representative id (FK target)
+            json.dumps({
+                "batch_size": len(valid_items),
+                "approver_role": ctx.role,
+                "approver_wh_id": ctx.scope_wh_id,
+                "sample_orders": [it["order_id"] for it in valid_items[:5]],
+            }),
+        ),
+    )
+
+
 @router.post("/intervene/batch")
 def intervene_batch(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
-    """일괄 승인/거절 (사용자 결정 2026-05-13).
+    """일괄 승인/거절 — bulk SQL 1 transaction · 단일 notification (2026-05-13 v2).
 
-    frontend N 회 호출 → backend 1 회로 통합. 503 race + 느림 해소.
+    효율 개선:
+      - 기존: N items × {2 SQL validate + 3 SQL record + 1 SELECT + 1 HTTP notify} ≈ 7N SQL + N HTTP
+      - 신규: 1 fetch + executemany (INSERT/UPDATE) + 2 bulk UPDATE + 1 audit + 1 HTTP notify
+      - 1000 items: ~7000 SQL + 1000 HTTP → ~5 SQL + 1 HTTP
+
     body: {action: 'approve'|'reject', items: [{order_id, approval_side, reject_reason?}]}
     response: {total, ok, failed, errors}
     """
     action = body.get("action")
-    items = body.get("items", [])
+    items_raw = body.get("items", []) or []
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="action 은 'approve' 또는 'reject'")
-    if not items or len(items) > 1000:
+    if not items_raw or len(items_raw) > 1000:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="items 는 1~1000 개")
 
-    ok = 0
-    failed = 0
-    errors: list[str] = []
-    for it in items:
-        try:
-            if action == "approve":
-                req = ApproveRequest(
-                    order_id=it["order_id"],
-                    approval_side=it.get("approval_side", "FINAL"),
-                    note=it.get("note"),
-                )
-                approve(req, ctx)
-            else:
-                req2 = RejectRequest(
-                    order_id=it["order_id"],
-                    approval_side=it.get("approval_side", "FINAL"),
-                    reject_reason=it.get("reject_reason", "일괄 거절"),
-                )
-                reject(req2, ctx)
-            ok += 1
-        except HTTPException as e:
-            failed += 1
-            if len(errors) < 20:
-                errors.append(f"{it.get('order_id', '?')}: {e.detail}")
-        except Exception as e:
-            failed += 1
-            if len(errors) < 20:
-                errors.append(f"{it.get('order_id', '?')}: {str(e)[:100]}")
+    decision = "APPROVED" if action == "approve" else "REJECTED"
+    order_ids = list({it["order_id"] for it in items_raw if it.get("order_id")})
 
-    return {"total": len(items), "ok": ok, "failed": failed, "errors": errors}
+    valid_items: list[dict] = []
+    errors: list[str] = []
+
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            # 1) 한 SQL 로 모든 order metadata + side wh 동시 fetch
+            cur.execute(
+                """
+                SELECT po.order_id::text, po.order_type,
+                       po.target_location_id,
+                       sl.wh_id AS source_wh, tl.wh_id AS target_wh
+                  FROM pending_orders po
+                  LEFT JOIN locations sl ON sl.location_id = po.source_location_id
+                  LEFT JOIN locations tl ON tl.location_id = po.target_location_id
+                 WHERE po.order_id = ANY(%s::uuid[])
+                """,
+                (order_ids,),
+            )
+            meta_by_oid = {
+                r[0]: {"order_type": r[1], "target_loc": r[2], "source_wh": r[3], "target_wh": r[4]}
+                for r in cur.fetchall()
+            }
+
+        # 2) In-memory 권한 검증 + valid set 구축
+        for it in items_raw:
+            oid = it.get("order_id")
+            side = it.get("approval_side", "FINAL")
+            try:
+                if oid not in meta_by_oid:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="order not found")
+                _check_authority_rules(ctx, meta_by_oid[oid], side)
+                valid_items.append({
+                    "order_id": oid, "side": side,
+                    "reject_reason": (it.get("reject_reason") if action == "reject" else None),
+                })
+            except HTTPException as e:
+                if len(errors) < 20:
+                    errors.append(f"{oid}: {e.detail}")
+
+        # 3) Bulk write — 단일 transaction
+        if valid_items:
+            _bulk_record_approvals(conn, valid_items, ctx, decision)
+        conn.commit()
+
+    # 4) 단일 batch notification (1000 HTTP → 1)
+    if valid_items:
+        event = "OrderApproved" if decision == "APPROVED" else "OrderRejected"
+        severity = "INFO" if decision == "APPROVED" else "WARNING"
+        _notify(
+            ctx.token, event, severity=severity,
+            payload={
+                "batch_size": len(valid_items),
+                "approver_role": ctx.role,
+                "approver_wh_id": ctx.scope_wh_id,
+                "sample_order_ids": [it["order_id"] for it in valid_items[:5]],
+            },
+        )
+
+    return {
+        "total": len(items_raw),
+        "ok": len(valid_items),
+        "failed": len(items_raw) - len(valid_items),
+        "errors": errors,
+    }
 
 
 @router.patch("/pending-orders/{order_id}", response_model=PendingOrderEditResponse)
