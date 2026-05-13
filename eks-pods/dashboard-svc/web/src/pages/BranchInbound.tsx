@@ -11,12 +11,14 @@ import InlineMessage from '../components/InlineMessage';
 import { useLocations } from '../useLocations';
 
 /**
- * UX-6 매장 입고 처리 — FR-A6.6 (지점 수동 개입).
+ * UX-6 매장 입·출고 처리 — FR-A6.6 (지점 수동 개입).
  *
- * - 수령 (정상 입고 완료)  → confirm 후 status=EXECUTED 마킹 (intervention-svc 후속 처리)
- * - 거부 (수량 불일치 · 파손 · 누락) → 사유 입력 모달 → /intervene/reject 호출
+ * V6.2 시나리오: 지점은 입고 + 출고 모두 처리.
+ * - 입고: target_location_id = 내 매장 → 수령/거부
+ * - 출고: source_location_id = 내 매장 → 발송 완료 (Stage 1 REBALANCE source 측)
  *
- * 거부 시 물류센터에 알림 (FR-A8.7) — notification-svc OrderRejected 이벤트 발행.
+ * Quick-mode: 출고 발송 완료는 기존 /inbound/{order_id}/receive 재사용
+ * (status=EXECUTED 마킹 — backend 입장에선 source/target 양측 모두 동일 처리).
  */
 const REJECT_REASONS = [
   '수량 부족',
@@ -37,9 +39,17 @@ export default function BranchInbound() {
     queryFn: () => fetchInstructions(role),
     refetchInterval: 8000,
   });
-  const allInbound = q.data?.items.filter((o) => o.target_location_id === my_store) ?? [];
-  const myInbound = allInbound.filter((o) => o.status === 'APPROVED');
-  const myPending = allInbound.filter((o) => o.status === 'PENDING' || o.status === 'AUTO_EXECUTED');
+  const allInstr = q.data?.items ?? [];
+  // 입고: target = 내 매장 + APPROVED
+  const myInbound = allInstr.filter((o) => o.target_location_id === my_store && o.status === 'APPROVED');
+  // 출고: source = 내 매장 + APPROVED (매장 간 REBALANCE 의 source 측)
+  const myOutbound = allInstr.filter((o) => o.source_location_id === my_store && o.status === 'APPROVED');
+  // PENDING 입고 — 본사 승인 대기 (별도 섹션)
+  const myPending = allInstr.filter(
+    (o) => o.target_location_id === my_store && (o.status === 'PENDING' || o.status === 'AUTO_EXECUTED'),
+  );
+
+  const [tab, setTab] = useState<'inbound' | 'outbound'>('inbound');
 
   // Reject modal state
   const [rejectTarget, setRejectTarget] = useState<{ order_id: string; isbn13: string; qty: number } | null>(null);
@@ -47,10 +57,10 @@ export default function BranchInbound() {
   const [note, setNote] = useState('');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [receiveTarget, setReceiveTarget] = useState<{ order_id: string; qty: number } | null>(null);
+  const [shipTarget, setShipTarget] = useState<{ order_id: string; qty: number; dest: string } | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   // P1-2 입고 거부 — intervention-svc /inbound/{order_id}/reject 호출 (별도 endpoint).
-  // 이전 postIntervene 'reject' 는 의사결정 큐 거부였어서 mismatch 였음 (Phase C 갭 list G4).
   const reject = useMutation({
     mutationFn: ({ order_id, reject_reason }: { order_id: string; reject_reason: string }) =>
       postInboundReject(role, order_id, reject_reason),
@@ -86,10 +96,33 @@ export default function BranchInbound() {
     },
   });
 
+  // 출고 발송 완료 — 기존 receive endpoint 재사용 (status → EXECUTED).
+  const shipMu = useMutation({
+    mutationFn: (id: string) => postInboundReceive(role, id),
+    onSuccess: (r) => {
+      if (r.detail) {
+        setFeedback({ type: 'error', msg: `발송 실패: ${r.detail}` });
+        return;
+      }
+      setFeedback({ type: 'success', msg: `발송 완료 (${r.qty ?? '?'}권) · 운송 시작` });
+      qc.invalidateQueries({ queryKey: ['instr-all', role] });
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFeedback({ type: 'error', msg: `발송 실패: ${msg}` });
+    },
+  });
+
   const handleReceiveConfirm = () => {
     if (!receiveTarget) return;
     receiveMu.mutate(receiveTarget.order_id);
     setReceiveTarget(null);
+  };
+
+  const handleShipConfirm = () => {
+    if (!shipTarget) return;
+    shipMu.mutate(shipTarget.order_id);
+    setShipTarget(null);
   };
 
   const handleReject = () => {
@@ -101,17 +134,29 @@ export default function BranchInbound() {
     });
   };
 
+  const tabBtn = (key: 'inbound' | 'outbound', label: string, count: number) => (
+    <button
+      key={key}
+      onClick={() => setTab(key)}
+      className={`px-4 py-2 text-sm border-b-2 -mb-px transition ${
+        tab === key
+          ? 'border-bf-primary text-bf-primary font-semibold'
+          : 'border-transparent text-bf-muted hover:text-bf-text'
+      }`}
+    >
+      {label} ({count})
+    </button>
+  );
+
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">{nameOf(my_store)} · 입고 확인</h1>
+        <h1 className="h1">{nameOf(my_store)} · 입·출고 처리</h1>
         <p className="text-bf-muted text-xs mt-1">
-          물류센터에서 발송된 도서가 매장에 도착했을 때 처리하는 화면입니다.
-          정상이면 <b>수령</b>, 수량/품질 문제가 있으면 <b>거부</b> 후 사유를 입력하면 물류센터에 즉시 통보됩니다.
+          물류센터 → 우리 매장 도착 건은 <b>입고 대기</b>, 우리 매장 → 타 매장 재분배 (REBALANCE) 발송 건은 <b>출고 대기</b> 에서 처리합니다.
         </p>
-        {/* D5-4 workflow link */}
         <div className="text-[11px] text-bf-muted mt-1">
-          수령 처리 → 매장 재고 자동 갱신 → <a href="/branch-inventory" className="text-bf-primary hover:underline">매장 재고</a> 확인
+          처리 → 매장 재고 자동 갱신 → <a href="/branch-inventory" className="text-bf-primary hover:underline">매장 재고</a> 확인
         </div>
       </div>
 
@@ -124,99 +169,196 @@ export default function BranchInbound() {
         />
       )}
 
-      <div className="card">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="h2 flex items-center">입고 대기 ({myInbound.length})<HelpHint text="물류센터에서 발송된 도서. 정상이면 수령, 수량/품질 문제가 있으면 거부합니다. 거부 사유는 물류센터에 즉시 통보됩니다." /></h2>
-          <button
-            className="btn-primary text-xs"
-            onClick={async () => {
-              if (!myInbound.length) { setFeedback({ type:'error', msg:'입고 대기 항목이 없습니다.' }); return; }
-              if (!window.confirm(`입고 대기 ${myInbound.length}건을 모두 수령 처리합니다. 진행할까요?`)) return;
-              setBulkBusy(true);
-              let ok = 0, ng = 0;
-              for (const o of myInbound) {
-                try { await receiveMu.mutateAsync(o.order_id); ok++; }
-                catch { ng++; }
-              }
-              setFeedback({ type: ng ? 'error' : 'success', msg: `일괄 수령 완료 · 성공 ${ok} 실패 ${ng}` });
-              setBulkBusy(false);
-            }}
-            disabled={bulkBusy || !myInbound.length}
-            title="모든 입고 대기를 일괄 수령"
-          >
-            {bulkBusy ? '진행 중…' : `전체 수령 (${myInbound.length}건)`}
-          </button>
-        </div>
-        <p className="text-xs text-bf-muted mb-3">본사 승인 완료된 항목만 수령 가능</p>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>승인 일시</th>
-              <th>유형</th>
-              <th>긴급도</th>
-              <th>ISBN</th>
-              <th>제목</th>
-              <th>출발지</th>
-              <th className="text-right">수량</th>
-              <th className="text-right">처리</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groupByDate(myInbound).map((g) => {
-              const tone = dateGroupTone(g.label);
-              return (
-                <Fragment key={g.key}>
-                  <tr className="bg-bf-panel2"><td colSpan={8} className={`py-1.5 px-3 ${tone.wrap}`}>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${tone.pill}`}>{g.label}</span>
-                      <span className="text-[11px] text-bf-muted">{g.total}건 입고 대기</span>
-                    </div>
-                  </td></tr>
-                  {g.rows.map((o) => (
-              <tr key={o.order_id}>
-                <td className="text-bf-muted">{o.approved_at ? new Date(o.approved_at).toLocaleString('ko-KR') : '-'}</td>
-                <td>{ko(ORDER_TYPE_KO, o.order_type)}</td>
-                <td>
-                  <span className={
-                    o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
-                    o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
-                  }>{ko(URGENCY_KO, o.urgency_level)}</span>
-                </td>
-                <td className="font-mono text-[11px]">{o.isbn13}</td>
-                <td>{o.title ?? '-'}</td>
-                <td>{o.source_location_id != null ? nameOf(o.source_location_id) : '-'}</td>
-                <td className="text-right">{o.qty}권</td>
-                <td className="text-right">
-                  <div className="inline-flex gap-2">
-                    <button
-                      className="btn-primary btn-sm"
-                      onClick={() => setReceiveTarget({ order_id: o.order_id, qty: o.qty })}
-                    >
-                      수령
-                    </button>
-                    <button
-                      className="btn-secondary btn-sm text-bf-danger border-bf-danger"
-                      onClick={() => setRejectTarget({ order_id: o.order_id, isbn13: o.isbn13, qty: o.qty })}
-                    >
-                      거부
-                    </button>
-                  </div>
-                </td>
-              </tr>
-                  ))}
-                </Fragment>
-              );
-            })}
-            {myInbound.length === 0 && (
-              <tr><td colSpan={8}>
-                <EmptyState icon="📦" message="입고 대기 없음" hint="모든 발송 건이 수령 또는 거부 처리되었습니다" />
-              </td></tr>
-            )}
-          </tbody>
-        </table>
+      <div className="flex gap-2 border-b border-bf-border">
+        {tabBtn('inbound', '📥 입고 대기', myInbound.length)}
+        {tabBtn('outbound', '📤 출고 대기', myOutbound.length)}
       </div>
 
-      {myPending.length > 0 && (
+      {tab === 'inbound' && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="h2 flex items-center">입고 대기 ({myInbound.length})<HelpHint text="물류센터 또는 타 매장에서 발송된 도서. 정상이면 수령, 수량/품질 문제가 있으면 거부합니다." /></h2>
+            <button
+              className="btn-primary text-xs"
+              onClick={async () => {
+                if (!myInbound.length) { setFeedback({ type:'error', msg:'입고 대기 항목이 없습니다.' }); return; }
+                if (!window.confirm(`입고 대기 ${myInbound.length}건을 모두 수령 처리합니다. 진행할까요?`)) return;
+                setBulkBusy(true);
+                let ok = 0, ng = 0;
+                for (const o of myInbound) {
+                  try { await receiveMu.mutateAsync(o.order_id); ok++; }
+                  catch { ng++; }
+                }
+                setFeedback({ type: ng ? 'error' : 'success', msg: `일괄 수령 완료 · 성공 ${ok} 실패 ${ng}` });
+                setBulkBusy(false);
+              }}
+              disabled={bulkBusy || !myInbound.length}
+              title="모든 입고 대기를 일괄 수령"
+            >
+              {bulkBusy ? '진행 중…' : `전체 수령 (${myInbound.length}건)`}
+            </button>
+          </div>
+          <p className="text-xs text-bf-muted mb-3">본사 승인 완료된 항목만 수령 가능</p>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>승인 일시</th>
+                <th>유형</th>
+                <th>긴급도</th>
+                <th>ISBN</th>
+                <th>제목</th>
+                <th>출발지</th>
+                <th className="text-right">수량</th>
+                <th className="text-right">처리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groupByDate(myInbound).map((g) => {
+                const tone = dateGroupTone(g.label);
+                return (
+                  <Fragment key={g.key}>
+                    <tr className="bg-bf-panel2"><td colSpan={8} className={`py-1.5 px-3 ${tone.wrap}`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${tone.pill}`}>{g.label}</span>
+                        <span className="text-[11px] text-bf-muted">{g.total}건 입고 대기</span>
+                      </div>
+                    </td></tr>
+                    {g.rows.map((o) => (
+                <tr key={o.order_id}>
+                  <td className="text-bf-muted">{o.approved_at ? new Date(o.approved_at).toLocaleString('ko-KR') : '-'}</td>
+                  <td>{ko(ORDER_TYPE_KO, o.order_type)}</td>
+                  <td>
+                    <span className={
+                      o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
+                      o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
+                    }>{ko(URGENCY_KO, o.urgency_level)}</span>
+                  </td>
+                  <td className="font-mono text-[11px]">{o.isbn13}</td>
+                  <td>{o.title ?? '-'}</td>
+                  <td>{o.source_location_id != null ? nameOf(o.source_location_id) : '-'}</td>
+                  <td className="text-right">{o.qty}권</td>
+                  <td className="text-right">
+                    <div className="inline-flex gap-2">
+                      <button
+                        className="btn-primary btn-sm"
+                        onClick={() => setReceiveTarget({ order_id: o.order_id, qty: o.qty })}
+                      >
+                        수령
+                      </button>
+                      <button
+                        className="btn-secondary btn-sm text-bf-danger border-bf-danger"
+                        onClick={() => setRejectTarget({ order_id: o.order_id, isbn13: o.isbn13, qty: o.qty })}
+                      >
+                        거부
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
+              {myInbound.length === 0 && (
+                <tr><td colSpan={8}>
+                  <EmptyState icon="📦" message="입고 대기 없음" hint="모든 발송 건이 수령 또는 거부 처리되었습니다" />
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'outbound' && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="h2 flex items-center">출고 대기 ({myOutbound.length})<HelpHint text="우리 매장에서 타 매장으로 재분배 발송할 도서 (Stage 1 REBALANCE source). 포장 후 발송 완료를 눌러 운송을 시작합니다." /></h2>
+            <button
+              className="btn-primary text-xs"
+              onClick={async () => {
+                if (!myOutbound.length) { setFeedback({ type:'error', msg:'출고 대기 항목이 없습니다.' }); return; }
+                if (!window.confirm(`출고 대기 ${myOutbound.length}건을 모두 발송 처리합니다. 진행할까요?`)) return;
+                setBulkBusy(true);
+                let ok = 0, ng = 0;
+                for (const o of myOutbound) {
+                  try { await shipMu.mutateAsync(o.order_id); ok++; }
+                  catch { ng++; }
+                }
+                setFeedback({ type: ng ? 'error' : 'success', msg: `일괄 발송 완료 · 성공 ${ok} 실패 ${ng}` });
+                setBulkBusy(false);
+              }}
+              disabled={bulkBusy || !myOutbound.length}
+              title="모든 출고 대기를 일괄 발송"
+            >
+              {bulkBusy ? '진행 중…' : `전체 발송 (${myOutbound.length}건)`}
+            </button>
+          </div>
+          <p className="text-xs text-bf-muted mb-3">본사 승인 완료된 재분배 (REBALANCE) 의 source 측. 포장 후 발송 완료를 누르면 도착지 매장에 입고 대기로 표시됩니다.</p>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>승인 일시</th>
+                <th>유형</th>
+                <th>긴급도</th>
+                <th>ISBN</th>
+                <th>제목</th>
+                <th>도착지</th>
+                <th className="text-right">수량</th>
+                <th className="text-right">처리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groupByDate(myOutbound).map((g) => {
+                const tone = dateGroupTone(g.label);
+                return (
+                  <Fragment key={g.key}>
+                    <tr className="bg-bf-panel2"><td colSpan={8} className={`py-1.5 px-3 ${tone.wrap}`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${tone.pill}`}>{g.label}</span>
+                        <span className="text-[11px] text-bf-muted">{g.total}건 출고 대기</span>
+                      </div>
+                    </td></tr>
+                    {g.rows.map((o) => (
+                <tr key={o.order_id}>
+                  <td className="text-bf-muted">{o.approved_at ? new Date(o.approved_at).toLocaleString('ko-KR') : '-'}</td>
+                  <td>{ko(ORDER_TYPE_KO, o.order_type)}</td>
+                  <td>
+                    <span className={
+                      o.urgency_level === 'CRITICAL' ? 'pill-rejected' :
+                      o.urgency_level === 'URGENT'   ? 'pill-pending' : 'pill-info'
+                    }>{ko(URGENCY_KO, o.urgency_level)}</span>
+                  </td>
+                  <td className="font-mono text-[11px]">{o.isbn13}</td>
+                  <td>{o.title ?? '-'}</td>
+                  <td>{o.target_location_id != null ? nameOf(o.target_location_id) : '-'}</td>
+                  <td className="text-right">{o.qty}권</td>
+                  <td className="text-right">
+                    <button
+                      className="btn-primary btn-sm"
+                      onClick={() => setShipTarget({
+                        order_id: o.order_id,
+                        qty: o.qty,
+                        dest: o.target_location_id != null ? nameOf(o.target_location_id) : '-',
+                      })}
+                    >
+                      발송 완료
+                    </button>
+                  </td>
+                </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
+              {myOutbound.length === 0 && (
+                <tr><td colSpan={8}>
+                  <EmptyState icon="🚚" message="출고 대기 없음" hint="우리 매장에서 발송할 재분배 건이 없습니다" />
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'inbound' && myPending.length > 0 && (
         <div className="card opacity-70">
           <h2 className="h2">🕒 승인 대기 중 ({myPending.length})</h2>
           <p className="text-xs text-bf-muted mb-2">
@@ -249,6 +391,16 @@ export default function BranchInbound() {
         confirmText="수령 처리"
         onConfirm={handleReceiveConfirm}
         onCancel={() => setReceiveTarget(null)}
+      />
+
+      {/* 발송 확인 모달 */}
+      <ConfirmModal
+        open={shipTarget !== null}
+        title="발송 확인"
+        message={shipTarget ? `${shipTarget.dest} 으로 ${shipTarget.qty}권 발송을 확인하시겠습니까?\n발송 완료 시 매장 재고에서 차감되고 도착지에 입고 대기로 표시됩니다.` : ''}
+        confirmText="발송 완료"
+        onConfirm={handleShipConfirm}
+        onCancel={() => setShipTarget(null)}
       />
 
       {/* 거부 사유 모달 */}
