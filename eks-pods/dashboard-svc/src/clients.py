@@ -210,6 +210,14 @@ async def post_decision_plan_daily(body: dict, token: str) -> tuple[int, Any]:
     return await _safe_post(f"{settings.decision_svc_url}/decision/plan-daily", body, token, timeout=120.0)
 
 
+async def post_intervention_inbound_batch_receive(body: dict, token: str) -> tuple[int, Any]:
+    """일괄 입고 수령 (BranchInbound 전체 수령/발송 · WhInstructions 일괄)."""
+    return await _safe_post(
+        f"{settings.intervention_svc_url}/intervention/inbound/batch-receive",
+        body, token, timeout=60.0,
+    )
+
+
 async def post_intervention_returns_request(body: dict, token: str) -> tuple[int, Any]:
     """P1-3 Branch 반품 신청 (intervention-svc /intervention/returns/request)."""
     return await _safe_post(

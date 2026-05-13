@@ -197,6 +197,18 @@ async def cascade_run_batch(body: dict = Body(...), ctx: AuthContext = Depends(r
     return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
 
 
+@router.post("/inbound/batch-receive")
+async def inbound_batch_receive(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """일괄 입고 수령 — intervention-svc /inbound/batch-receive proxy.
+
+    body: {order_ids: ["uuid", ...]} (max 1000)
+    response: {total, ok, failed, errors}
+    """
+    from ..clients import post_intervention_inbound_batch_receive
+    sc, data = await post_intervention_inbound_batch_receive(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
 @router.post("/cascade/plan-daily")
 async def cascade_plan_daily(body: dict = Body(default={}), ctx: AuthContext = Depends(require_auth)):
     """D+1 forecast 기반 익일 배치 발의 — decision-svc /decision/plan-daily proxy.

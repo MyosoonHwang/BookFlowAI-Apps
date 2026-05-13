@@ -1479,6 +1479,109 @@ def receive_inbound(order_id: str, ctx: AuthContext = Depends(require_auth)):
     }
 
 
+# ─── 일괄 입고 수령 (BranchInbound 전체 수령/발송 + WhInstructions 일괄 처리) ────────────
+@router.post("/inbound/batch-receive")
+def batch_receive_inbound(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """N order_id 일괄 EXECUTED + inventory 일괄 증분 (1 transaction · 1 notification).
+
+    이전: N items × (1 SQL select + 1 SQL update + 1 audit + 1 HTTP inventory + 1 HTTP notify)
+    신규: 1 SQL fetch + bulk UPDATE pending_orders + executemany inventory + 1 audit + 1 notify
+
+    body: {order_ids: ["uuid", ...]} (max 1000)
+    """
+    order_ids = body.get("order_ids", []) or []
+    if not order_ids or len(order_ids) > 1000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="order_ids 1~1000 개")
+
+    valid: list[tuple] = []  # (order_id, target_loc, qty, isbn13, order_type)
+    errors: list[str] = []
+
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT po.order_id::text, po.order_type, po.target_location_id,
+                       po.qty, po.isbn13, po.status,
+                       tl.wh_id AS target_wh
+                  FROM pending_orders po
+                  LEFT JOIN locations tl ON tl.location_id = po.target_location_id
+                 WHERE po.order_id = ANY(%s::uuid[])
+                """,
+                (order_ids,),
+            )
+            for r in cur.fetchall():
+                oid, ot, tloc, qty, isbn, st, twh = r
+                if st != "APPROVED":
+                    if len(errors) < 20:
+                        errors.append(f"{oid}: status={st}")
+                    continue
+                # 권한 검증
+                if ctx.role == "branch-clerk":
+                    if ctx.scope_store_id is None or ctx.scope_store_id != tloc:
+                        if len(errors) < 20:
+                            errors.append(f"{oid}: 자기 매장 외 (target={tloc})")
+                        continue
+                elif ctx.role == "wh-manager":
+                    if ctx.scope_wh_id is None or ctx.scope_wh_id != twh:
+                        if len(errors) < 20:
+                            errors.append(f"{oid}: 자기 권역 외 (target_wh={twh})")
+                        continue
+                elif ctx.role != "hq-admin":
+                    if len(errors) < 20:
+                        errors.append(f"{oid}: 권한 없음")
+                    continue
+                valid.append((oid, tloc, int(qty or 0), isbn, ot))
+
+            if not valid:
+                conn.commit()
+                return {"total": len(order_ids), "ok": 0, "failed": len(order_ids), "errors": errors}
+
+            valid_oids = [v[0] for v in valid]
+            cur.execute(
+                """UPDATE pending_orders SET status='EXECUTED', executed_at=NOW()
+                    WHERE order_id = ANY(%s::uuid[])""",
+                (valid_oids,),
+            )
+
+            # 인벤토리 증분 — (isbn, location) 별 합산 후 executemany
+            agg: dict[tuple, int] = {}
+            for _, tloc, qty, isbn, _ in valid:
+                if tloc is None:
+                    continue
+                k = (isbn, tloc)
+                agg[k] = agg.get(k, 0) + qty
+            if agg:
+                cur.executemany(
+                    """UPDATE inventory SET on_hand = on_hand + %s
+                        WHERE isbn13 = %s AND location_id = %s""",
+                    [(q, isbn, loc) for (isbn, loc), q in agg.items()],
+                )
+
+            cur.execute(
+                """INSERT INTO audit_log (actor_type, actor_id, action, entity_type, entity_id, after_state)
+                   VALUES ('user', %s, 'inbound.batch_receive', 'pending_orders', %s, %s::jsonb)""",
+                (ctx.user_id, valid[0][0],
+                 json.dumps({"batch_size": len(valid), "inventory_aggregations": len(agg),
+                             "sample_orders": valid_oids[:5]})),
+            )
+        conn.commit()
+
+    # 단일 batch notification (per-order notify 안 보냄 · 합산)
+    _notify(
+        ctx.token, "OrderExecuted", severity="INFO",
+        payload={
+            "batch_size": len(valid),
+            "approver_role": ctx.role,
+            "approver_wh_id": ctx.scope_wh_id,
+            "sample_order_ids": valid_oids[:5],
+            "inventory_aggregations": len(agg),
+        },
+    )
+
+    return {"total": len(order_ids), "ok": len(valid),
+            "failed": len(order_ids) - len(valid), "errors": errors}
+
+
 # ─── A1 inbound reject (FR-A6.6 · 수량 불일치/파손/누락) ──────────────────────────────────
 @router.post("/inbound/{order_id}/reject")
 def reject_inbound(

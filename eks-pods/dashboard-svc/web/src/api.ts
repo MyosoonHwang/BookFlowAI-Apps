@@ -1,5 +1,5 @@
 // Same-origin (FastAPI serves SPA + API + WS).
-import { token, type Role } from './auth';
+import { getAuthMode, token, type Role } from './auth';
 
 export type { Role } from './auth';
 
@@ -45,28 +45,36 @@ async function _throwApiError(r: Response): Promise<never> {
   throw new ApiError(r.status, text || `${r.status} ${r.statusText}`);
 }
 
+// Entra 모드: Authorization 헤더 생략 + credentials:'include' (httpOnly cookie 만)
+// mock 모드: Authorization: Bearer mock-token-{role}
+function _authInit(role: Role, body?: unknown, method?: string): RequestInit {
+  const mode = getAuthMode();
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (mode === 'mock') headers.Authorization = token(role);
+  const init: RequestInit = {
+    method,
+    headers,
+    credentials: 'include',  // Entra cookie 필요 시 자동 첨부
+  };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return init;
+}
+
 async function getJson<T>(path: string, role: Role): Promise<T> {
-  const r = await fetch(path, { headers: { Authorization: token(role) } });
+  const r = await fetch(path, _authInit(role));
   if (!r.ok) await _throwApiError(r);
   return r.json();
 }
 
 async function postJson<T>(path: string, role: Role, body: unknown): Promise<T> {
-  const r = await fetch(path, {
-    method: 'POST',
-    headers: { Authorization: token(role), 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(path, _authInit(role, body, 'POST'));
   if (!r.ok) await _throwApiError(r);
   return r.json();
 }
 
 async function patchJson<T>(path: string, role: Role, body: unknown): Promise<T> {
-  const r = await fetch(path, {
-    method: 'PATCH',
-    headers: { Authorization: token(role), 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(path, _authInit(role, body, 'PATCH'));
   if (!r.ok) await _throwApiError(r);
   return r.json();
 }
@@ -468,6 +476,11 @@ export type PlanDailyResult = {
 };
 export const postPlanDaily = (role: Role, snapshot_date?: string) =>
   postJson<PlanDailyResult>('/dashboard/cascade/plan-daily', role, snapshot_date ? { snapshot_date } : {});
+
+// 일괄 입고 수령 (BranchInbound 전체 수령/발송)
+export type InboundBatchResult = { total: number; ok: number; failed: number; errors: string[] };
+export const postInboundBatchReceive = (role: Role, order_ids: string[]) =>
+  postJson<InboundBatchResult>('/dashboard/inbound/batch-receive', role, { order_ids });
 
 // UX-6: 재고 수동 조정 (Manual 페이지) — inventory-svc /adjust 프록시.
 export type InventoryAdjustResult = {
