@@ -602,27 +602,29 @@ def decide_batch(req: BatchDecideRequest, ctx: AuthContext = Depends(require_aut
 # =============================================================================
 
 def _build_daily_plan(cur, snapshot_date: date) -> list[dict]:
-    """D+1 forecast → optimal placement plan. Returns list of plan dicts."""
-    # 1. forecasts for snapshot_date (active books only)
-    cur.execute(
-        """
-        SELECT fc.isbn13, fc.store_id, fc.predicted_demand
-          FROM forecast_cache fc
-          JOIN books b ON b.isbn13 = fc.isbn13
-         WHERE fc.snapshot_date = %s
-           AND b.active = TRUE
-        """,
-        (snapshot_date,),
-    )
-    fc_rows = cur.fetchall()
-    forecast: dict[str, dict[int, float]] = {}
-    for isbn, store, pred in fc_rows:
-        forecast.setdefault(isbn, {})[int(store)] = float(pred)
+    """D+1 forecast → optimal placement plan. Returns list of plan dicts.
 
-    if not forecast:
+    forecast 없는 책도 plan 대상 (active 이고 inventory 가 있으면 safety_stock 기준 부족 검사).
+    """
+    # 1. 전 active 책 list (forecast 있든 없든 — safety_stock 기반 부족도 plan)
+    cur.execute("SELECT isbn13 FROM books WHERE active = TRUE")
+    isbns = [r[0] for r in cur.fetchall()]
+    if not isbns:
         return []
 
-    isbns = list(forecast.keys())
+    # 2. forecast for snapshot_date (있는 것만, 나머지는 0 으로 처리)
+    cur.execute(
+        """
+        SELECT isbn13, store_id, predicted_demand
+          FROM forecast_cache
+         WHERE snapshot_date = %s
+           AND isbn13 = ANY(%s)
+        """,
+        (snapshot_date, isbns),
+    )
+    forecast: dict[str, dict[int, float]] = {}
+    for isbn, store, pred in cur.fetchall():
+        forecast.setdefault(isbn, {})[int(store)] = float(pred)
 
     # 2. locations meta
     cur.execute(
@@ -682,7 +684,10 @@ def _build_daily_plan(cur, snapshot_date: date) -> list[dict]:
 
     for isbn in isbns:
         inv = inventory.get(isbn, {})
-        fc = forecast[isbn]
+        fc = forecast.get(isbn, {})  # forecast 없는 책 = empty dict (predicted=0 폴백)
+        # forecast/inventory 모두 없으면 plan 대상 X (sold out 책 → inventory row 가 0 으로라도 있어야)
+        if not inv:
+            continue
 
         # Compute gap per location
         gaps: dict[int, dict] = {}
@@ -693,13 +698,15 @@ def _build_daily_plan(cur, snapshot_date: date) -> list[dict]:
             in_in = in_transit.get(isbn, {}).get(loc, 0)
             effective = i["on_hand"] - i["reserved"] + in_in
 
+            # desired 정합: 시드의 inventory.safety_stock 이 이미 안전재고 buffer (5일치) 포함.
+            # 중복 가산 방지: max(safety_stock, predicted × DAYS) — 둘 중 큰 쪽 (low badge 기준 동일).
             if meta["type"] == "STORE_OFFLINE":
                 pred = fc.get(loc, 0.0)
-                desired = math.ceil(pred * PLAN_SAFETY_DAYS) + i["safety"]
+                desired = max(i["safety"], math.ceil(pred * PLAN_SAFETY_DAYS))
             else:  # WH
                 same_wh_stores = wh_to_stores.get(meta["wh"], [])
                 wh_pred = sum(fc.get(s, 0.0) for s in same_wh_stores)
-                desired = math.ceil(wh_pred * PLAN_WH_BUFFER_DAYS) + i["safety"]
+                desired = max(i["safety"], math.ceil(wh_pred * PLAN_WH_BUFFER_DAYS))
 
             gap = desired - effective
             gaps[loc] = {
@@ -835,9 +842,39 @@ def plan_daily(
 
     with db_conn() as conn:
         with conn.cursor() as cur:
+            # 멱등성: 같은 snapshot_date 의 기존 plan row 정리 (재호출 안전)
+            # — rationale.plan_snapshot_date 일치 + status PENDING + executed_at NULL 만 delete
+            cur.execute(
+                """
+                DELETE FROM order_approvals
+                 WHERE order_id IN (
+                       SELECT order_id FROM pending_orders
+                        WHERE status = 'PENDING'
+                          AND executed_at IS NULL
+                          AND forecast_rationale->>'plan_snapshot_date' = %s
+                 )
+                """,
+                (str(snapshot_date),),
+            )
+            cur.execute(
+                """
+                DELETE FROM pending_orders
+                 WHERE status = 'PENDING'
+                   AND executed_at IS NULL
+                   AND forecast_rationale->>'plan_snapshot_date' = %s
+                """,
+                (str(snapshot_date),),
+            )
+            cleared = cur.rowcount
+
             plan = _build_daily_plan(cur, snapshot_date)
             if not plan:
-                return {"snapshot_date": str(snapshot_date), "rows_created": 0, "by_stage": {}, "isbns_planned": 0}
+                conn.commit()
+                return {
+                    "snapshot_date": str(snapshot_date),
+                    "rows_created": 0, "by_stage": {}, "isbns_planned": 0,
+                    "cleared": cleared,
+                }
 
             # Urgency: Stage 3 (PUBLISHER) URGENT + auto_exec, 나머지 NORMAL
             insert_rows = []
@@ -893,4 +930,5 @@ def plan_daily(
         "rows_created": len(plan),
         "by_stage": by_stage,
         "isbns_planned": len(isbns_set),
+        "cleared": cleared,
     }
