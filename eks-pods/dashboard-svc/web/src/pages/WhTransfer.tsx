@@ -1,13 +1,14 @@
 import { Fragment, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
-import { fetchPending, type PendingOrder, type Role } from '../api';
+import { fetchPending, postIntervenebatch, type PendingOrder, type Role } from '../api';
 import { ko, ORDER_STATUS_KO, URGENCY_KO, whName } from '../labels';
 import { useLocations } from '../useLocations';
 import { groupByDate, dateGroupTone } from '../dateGroup';
 import KpiLine from '../components/charts/KpiLine';
 import KpiPie from '../components/charts/KpiPie';
+import { useToast } from '../components/Toast';
 
 /**
  * 권역 이동 - 2단계 SOURCE/TARGET 이중 승인 시나리오 (.pen C-1~C-4).
@@ -220,9 +221,14 @@ function TransferTable({
 
 export default function WhTransfer() {
   const { role } = useOutletContext<{ role: Role }>();
-  const wh = role === 'wh-manager-2' ? 2 : 1;
+  // role check 완화 (2026-05-13) — hq-admin · wh-manager-1 · wh-manager-2 모두 허용.
+  // 본사 (hq-admin) = 전사 모든 데이터 read + 강제 승인 권한.
+  const isHq = role === 'hq-admin';
+  const wh = role === 'wh-manager-2' ? 2 : 1; // hq-admin 은 표시상 수도권 다이어그램 기준 (UI 강조 X)
   const [expanded, setExpanded] = useState<string | null>(null);
   const { byId, labelOf } = useLocations(role);
+  const qc = useQueryClient();
+  const { showToast } = useToast();
   const whIdOf = (id: number | null | undefined): number | undefined => {
     if (id == null) return undefined;
     return byId.get(id)?.wh_id ?? undefined;
@@ -321,18 +327,56 @@ export default function WhTransfer() {
   }, [history, whIdOf]);
   const sankeyHasData = (sankeyOption.series[0].links?.length ?? 0) > 0;
   // D1-3a: locations.wh_id 기준 분리 (이전 not-null 비교는 모든 row 가 양쪽 list 에 중복으로 들어가 버그)
-  const outbound = transfers.filter((o) => whIdOf(o.source_location_id) === wh); // 내 권역 매장이 출고
-  const inbound  = transfers.filter((o) => whIdOf(o.target_location_id) === wh); // 내 권역 매장이 입고
+  // hq-admin: 자기 권역 제약 없이 전사 모든 WH_TRANSFER 표시 (수도권→영남 = outbound, 영남→수도권 = inbound 로 분리)
+  const outbound = isHq
+    ? transfers.filter((o) => whIdOf(o.source_location_id) === 1)
+    : transfers.filter((o) => whIdOf(o.source_location_id) === wh);
+  const inbound  = isHq
+    ? transfers.filter((o) => whIdOf(o.source_location_id) === 2)
+    : transfers.filter((o) => whIdOf(o.target_location_id) === wh);
   const toggle = (id: string) => setExpanded((cur) => (cur === id ? null : id));
+
+  // 본사 (hq-admin) 일괄 강제 승인 — SOURCE + TARGET 양측 모두 처리
+  const pendingTransfers = transfers.filter((o) => o.status === 'PENDING');
+  const hqBulkApprove = async () => {
+    if (!isHq) return;
+    if (!pendingTransfers.length) return;
+    if (!confirm(`${pendingTransfers.length}건의 권역 이동을 본사 강제 승인합니다.\n양측 (SOURCE + TARGET) 모두 처리됩니다.`)) return;
+    try {
+      const sourceItems = pendingTransfers.map((o) => ({ order_id: o.order_id, approval_side: 'SOURCE' }));
+      const targetItems = pendingTransfers.map((o) => ({ order_id: o.order_id, approval_side: 'TARGET' }));
+      const r1 = await postIntervenebatch(role, 'approve', sourceItems);
+      const r2 = await postIntervenebatch(role, 'approve', targetItems);
+      showToast({ type: 'success', message: `본사 강제 승인 완료 — SOURCE ${r1.ok}/${r1.total} · TARGET ${r2.ok}/${r2.total}` });
+      qc.invalidateQueries({ queryKey: ['pending-transfer'] });
+      qc.invalidateQueries({ queryKey: ['transfer-history-30'] });
+      qc.invalidateQueries({ queryKey: ['pending-active'] });
+    } catch (e) {
+      showToast({ type: 'error', message: `본사 강제 승인 실패: ${String(e)}` });
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="h1">권역 이동 의사결정 분석 뷰 — {whName(wh)} 권역</h1>
-        <p className="text-bf-muted text-xs mt-1">
-          권역 간 이동의 <b>근거 분석 · 추세 · 발의자</b> 중심 뷰입니다. <b>승인 처리</b>는 처리 대기 (WhApprove · WH_TRANSFER 탭) 에서 진행하세요.
-          행 클릭 시 출발 권역의 가용 여유분 (보유 − 예약 − 안전재고 − 14일 수요) 계산식을 단계별로 보여줍니다.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="h1">
+            {isHq ? '🔧 본사 모드 · 전사 권역 이동 분석' : `${whName(wh)} 권역 이동 분석`}
+          </h1>
+          <p className="text-bf-muted text-xs mt-1">
+            권역 간 이동의 <b>근거 분석 · 추세 · 발의자</b> 중심 뷰입니다. <b>승인 처리</b>는 처리 대기 (WhApprove · WH_TRANSFER 탭) 에서 진행하세요.
+            행 클릭 시 출발 권역의 가용 여유분 (보유 − 예약 − 안전재고 − 14일 수요) 계산식을 단계별로 보여줍니다.
+          </p>
+        </div>
+        {isHq && pendingTransfers.length > 0 && (
+          <button
+            className="btn-primary shrink-0 text-sm font-semibold"
+            onClick={hqBulkApprove}
+            title="양측 (SOURCE + TARGET) 모두 한 번에 강제 승인"
+          >
+            🔧 본사 일괄 강제 승인 ({pendingTransfers.length}건)
+          </button>
+        )}
       </div>
 
       {/* 권역 흐름 다이어그램 */}
@@ -420,16 +464,16 @@ export default function WhTransfer() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="h2">우리 창고가 보낼 항목 ({outbound.length})</h2>
-            <span className="text-[10px] text-bf-muted">상대 창고 수락 대기</span>
+            <h2 className="h2">{isHq ? `수도권 → 영남 (${outbound.length})` : `우리 창고가 보낼 항목 (${outbound.length})`}</h2>
+            <span className="text-[10px] text-bf-muted">{isHq ? '본사 전사 모니터링' : '상대 창고 수락 대기'}</span>
           </div>
           <TransferTable rows={outbound} emptyText="발의 건 없음" expandedId={expanded} onToggle={toggle} labelOf={labelOf} myWh={wh} whIdOf={whIdOf} />
         </div>
 
         <div className="card">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="h2">우리 창고가 받을 항목 ({inbound.length})</h2>
-            <span className="text-[10px] text-bf-muted">수락하면 운송 시작</span>
+            <h2 className="h2">{isHq ? `영남 → 수도권 (${inbound.length})` : `우리 창고가 받을 항목 (${inbound.length})`}</h2>
+            <span className="text-[10px] text-bf-muted">{isHq ? '본사 전사 모니터링' : '수락하면 운송 시작'}</span>
           </div>
           <TransferTable rows={inbound} emptyText="수락 대기 없음" expandedId={expanded} onToggle={toggle} labelOf={labelOf} myWh={wh} whIdOf={whIdOf} />
         </div>

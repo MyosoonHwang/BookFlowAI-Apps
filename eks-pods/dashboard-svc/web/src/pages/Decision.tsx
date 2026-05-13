@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
-import { fetchInsufficientStock, fetchPending, postDecide, postCascadeBatch, postIntervene, ApiError, type InsufficientStockItem, type Role } from '../api';
+import { fetchInsufficientStock, fetchPending, postDecide, postCascadeBatch, postIntervene, postIntervenebatch, ApiError, type InsufficientStockItem, type Role } from '../api';
 import { ko, ORDER_TYPE_KO, URGENCY_KO } from '../labels';
 import ConfirmModal from '../components/ConfirmModal';
 import EmptyState from '../components/EmptyState';
@@ -69,6 +69,33 @@ export default function Decision() {
       const err = e as ApiError | Error;
       showToast({ type: 'error', message: `강제 승인 실패: ${err.message}`, details: err instanceof ApiError ? err.requestId ?? undefined : undefined });
     },
+  });
+
+  // 본사 일괄 강제 승인 — 오늘 PENDING 전체 (Stage 1+2+3) 일괄 escalation.
+  //   · WH_TRANSFER 는 양측 (SOURCE + TARGET) 모두 escalate 필요
+  //   · 그 외는 FINAL 한 번
+  const [bulkEscalateOpen, setBulkEscalateOpen] = useState(false);
+  const bulkEscalate = useMutation({
+    mutationFn: async () => {
+      if (!pendingOnly.length) return { total: 0, ok: 0, failed: 0, errors: [] as string[] };
+      const items: { order_id: string; approval_side: string }[] = [];
+      for (const o of pendingOnly) {
+        if (o.order_type === 'WH_TRANSFER') {
+          items.push({ order_id: o.order_id, approval_side: 'SOURCE' });
+          items.push({ order_id: o.order_id, approval_side: 'TARGET' });
+        } else {
+          items.push({ order_id: o.order_id, approval_side: 'FINAL' });
+        }
+      }
+      return postIntervenebatch(role, 'approve', items);
+    },
+    onSuccess: (r) => {
+      showToast({ type: 'success', message: `본사 강제 승인 완료 — ${r?.ok ?? 0}/${r?.total ?? 0} 처리` });
+      qc.invalidateQueries({ queryKey: ['pending-active'] });
+      qc.invalidateQueries({ queryKey: ['pending-detail'] });
+      qc.invalidateQueries({ queryKey: ['pending-summary'] });
+    },
+    onError: (e) => showToast({ type: 'error', message: `본사 강제 승인 실패: ${String(e)}` }),
   });
 
   // D5-6 prefill 발의 modal state
@@ -150,13 +177,25 @@ export default function Decision() {
           </div>
         </div>
         {role === 'hq-admin' && (
-          <button
-            className="btn-outline btn-sm shrink-0"
-            title="시연용 — 예측 부족 도서 자동 cascade 일괄 발의 (각 단계의 처리 대기를 만들어 다른 역할이 승인 흐름 검증)"
-            onClick={() => setDemoOpen(true)}
-          >
-            시연: 예측 자동 발의
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              className="btn-outline btn-sm"
+              title="시연용 — 예측 부족 도서 자동 cascade 일괄 발의 (각 단계의 처리 대기를 만들어 다른 역할이 승인 흐름 검증)"
+              onClick={() => setDemoOpen(true)}
+            >
+              시연: 예측 자동 발의
+            </button>
+            {pendingOnly.length > 0 && (
+              <button
+                className="px-3 py-1.5 rounded-md text-sm font-semibold bg-rose-600 hover:bg-rose-700 text-white border border-rose-700 disabled:opacity-50"
+                title="오늘 PENDING 전체 (Stage 1+2+3) 를 본사 단독 강제 승인. WH_TRANSFER 는 양측 (SOURCE+TARGET) 자동 처리."
+                disabled={bulkEscalate.isPending}
+                onClick={() => setBulkEscalateOpen(true)}
+              >
+                {bulkEscalate.isPending ? '처리 중…' : `🔥 본사 강제 승인 (${pendingOnly.length}건)`}
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -363,6 +402,21 @@ export default function Decision() {
         }}
         onCancel={() => setEscalateTarget(null)}
         isLoading={escalate.isPending}
+      />
+
+      {/* 본사 일괄 강제 승인 confirm */}
+      <ConfirmModal
+        open={bulkEscalateOpen}
+        title="본사 일괄 강제 승인"
+        message={`오늘 PENDING ${pendingOnly.length}건을 본사 단독으로 즉시 통과시킵니다.\n\n· Stage 1 (권역 내 재분배) · Stage 2 (권역 간 이동) · Stage 3 (외부 발주) 모두 포함\n· WH_TRANSFER 는 양측 (SOURCE + TARGET) 자동 처리\n· 외부 발주 (Stage 3) 는 비용이 발생합니다\n\n진행할까요?`}
+        confirmText="강제 승인"
+        danger
+        onConfirm={() => {
+          setBulkEscalateOpen(false);
+          bulkEscalate.mutate();
+        }}
+        onCancel={() => setBulkEscalateOpen(false)}
+        isLoading={bulkEscalate.isPending}
       />
 
       {/* D5-6 Spike → Decision pre-fill modal */}
