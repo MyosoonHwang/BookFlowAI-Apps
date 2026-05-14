@@ -219,6 +219,7 @@ export default function WhDashboard() {
       const r = ((o as any).forecast_rationale ?? {}) as Record<string, unknown>;
       const d = typeof r.expected_arrival_date === 'string' ? r.expected_arrival_date : null;
       if (!d) continue;
+      if (d < todayIso) continue;  // 과거 도착일/출고일 제외 (history 시드 잔존 회피)
       if (!m.has(d)) m.set(d, { date: d, count: 0, orders: [] });
       const b = m.get(d)!;
       b.count += 1;
@@ -239,6 +240,7 @@ export default function WhDashboard() {
       const r = ((o as any).forecast_rationale ?? {}) as Record<string, unknown>;
       const d = typeof r.expected_arrival_date === 'string' ? r.expected_arrival_date : null;
       if (!d) continue;
+      if (d < todayIso) continue;  // 과거 도착일/출고일 제외 (history 시드 잔존 회피)
       if (!m.has(d)) m.set(d, { date: d, count: 0, orders: [] });
       const b = m.get(d)!;
       b.count += 1;
