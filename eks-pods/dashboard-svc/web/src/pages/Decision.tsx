@@ -69,10 +69,12 @@ export default function Decision() {
   const totalPending = pending.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalPending / PAGE_SIZE));
   const sc = pending.data?.stage_counts ?? {};
+  const stage0Count = sc.WH_TO_STORE ?? 0;
   const stage1Count = sc.REBALANCE ?? 0;
   const stage2Count = sc.WH_TRANSFER ?? 0;
   const stage3Count = sc.PUBLISHER_ORDER ?? 0;
   // 현재 페이지 안의 stage 별 list (table 렌더 + urgent 카운트용)
+  const stage0 = pendingOnly.filter((o) => STAGE_FROM_TYPE(o.order_type) === 0);
   const stage1 = pendingOnly.filter((o) => STAGE_FROM_TYPE(o.order_type) === 1);
   const stage2 = pendingOnly.filter((o) => STAGE_FROM_TYPE(o.order_type) === 2);
   const stage3 = pendingOnly.filter((o) => STAGE_FROM_TYPE(o.order_type) === 3);
@@ -256,10 +258,10 @@ export default function Decision() {
       )}
 
       {/* Stage 별 카운트 — 백엔드 stage_counts (전체 합 · 페이지 무관) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {[1, 2, 3].map((s) => {
-          const count = s === 1 ? stage1Count : s === 2 ? stage2Count : stage3Count;
-          const urgentList = s === 1 ? stage1 : s === 2 ? stage2 : stage3;
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        {[0, 1, 2, 3].map((s) => {
+          const count = s === 0 ? stage0Count : s === 1 ? stage1Count : s === 2 ? stage2Count : stage3Count;
+          const urgentList = s === 0 ? stage0 : s === 1 ? stage1 : s === 2 ? stage2 : stage3;
           const urgentSeen = urgentList.filter((o) => o.urgency_level === 'URGENT' || o.urgency_level === 'CRITICAL').length;
           return (
             <div key={s} className="metric-card">
