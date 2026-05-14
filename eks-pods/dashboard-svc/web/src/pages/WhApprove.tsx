@@ -11,29 +11,31 @@ import { useLocations } from '../useLocations';
 import { useToast } from '../components/Toast';
 
 /**
- * 창고 승인 큐 - 자기 wh 의 Stage 1 (REBALANCE) + Stage 2 (WH_TRANSFER SOURCE/TARGET) 분리.
+ * 창고 승인 큐 - 자기 wh 의 4-stage cascade 분리 (2026-05-14 Stage 0 WH_TO_STORE 추가).
  *
  * 백엔드 intervention-svc /intervention/queue 가 role/scope_wh_id 자동 필터.
- * approval_side (2026-05-14 REBALANCE 양측 협의 정정):
+ * approval_side:
+ *   - WH_TO_STORE: SOURCE (자기 wh 본체 → wh-manager) / TARGET (자기 매장 → branch-clerk · 여기는 SOURCE 만 다룸)
  *   - REBALANCE: SOURCE/TARGET 양측 (자기 wh 사이드만 승인 가능)
  *   - WH_TRANSFER: SOURCE/TARGET 둘 중 자기 wh 사이드만 가능
  *   - PUBLISHER_ORDER: FINAL (자기 권역만)
  */
+type Tab = 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
 export default function WhApprove() {
   const { role } = useOutletContext<{ role: Role }>();
   const qc = useQueryClient();
   const my_wh = role === 'wh-manager-2' ? 2 : 1;
-  // D1-1 (재정정): WhApprove 에 3 탭 모두 — REBALANCE (단독), WH_TRANSFER (양측 SOURCE/TARGET), PUBLISHER_ORDER (단독).
+  // D1-1 (재정정): WhApprove 에 4 탭 — WH_TO_STORE (SOURCE), REBALANCE, WH_TRANSFER, PUBLISHER_ORDER.
   // WhTransfer 페이지는 시각화 + 발의자 추적 보조용 · 승인은 양쪽에서 가능.
   const [searchParams] = useSearchParams();
   const initialTab = (() => {
     const t = searchParams.get('tab');
-    return (t === 'WH_TRANSFER' || t === 'PUBLISHER_ORDER') ? t : 'REBALANCE';
-  })() as 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
-  const [tab, setTab] = useState<'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER'>(initialTab);
+    return (t === 'WH_TO_STORE' || t === 'WH_TRANSFER' || t === 'PUBLISHER_ORDER' || t === 'REBALANCE') ? t : 'WH_TO_STORE';
+  })() as Tab;
+  const [tab, setTab] = useState<Tab>(initialTab);
   useEffect(() => {
     const t = searchParams.get('tab');
-    if (t === 'REBALANCE' || t === 'WH_TRANSFER' || t === 'PUBLISHER_ORDER') setTab(t);
+    if (t === 'WH_TO_STORE' || t === 'REBALANCE' || t === 'WH_TRANSFER' || t === 'PUBLISHER_ORDER') setTab(t);
   }, [searchParams]);
   const [busy, setBusy] = useState<string | null>(null);
   // 사용자가 방금 자기 측 승인/거절한 row — WH_TRANSFER 한쪽만 처리 시 row 가 PENDING 유지되어
@@ -195,6 +197,12 @@ export default function WhApprove() {
 
       <div className="flex gap-2 border-b border-bf-border flex-wrap">
         <button
+          className={`px-4 py-2 text-xs font-medium border-b-2 ${tab === 'WH_TO_STORE' ? 'border-bf-primary text-bf-primary' : 'border-transparent text-bf-muted'}`}
+          onClick={() => setTab('WH_TO_STORE')}
+        >
+          🏬 매장 보충 (출고 동의)
+        </button>
+        <button
           className={`px-4 py-2 text-xs font-medium border-b-2 ${tab === 'REBALANCE' ? 'border-bf-primary text-bf-primary' : 'border-transparent text-bf-muted'}`}
           onClick={() => setTab('REBALANCE')}
         >
@@ -256,7 +264,8 @@ export default function WhApprove() {
         order_type={tab}
         days={6}
         pageLabel={
-          tab === 'REBALANCE' ? '재분배 (자기 권역 내)'
+          tab === 'WH_TO_STORE' ? '매장 보충 (자기 wh 본체 → 권역 매장)'
+            : tab === 'REBALANCE' ? '재분배 (자기 권역 내)'
             : tab === 'WH_TRANSFER' ? '권역 이동 (양측 협의)'
             : '외부 발주 (자기 권역분)'
         }
@@ -267,6 +276,7 @@ export default function WhApprove() {
             ? (filtered as any[]).filter((o) => {
                 if (o.status !== 'PENDING') return false;
                 if (tab === 'WH_TRANSFER') return sideForOrder(o) !== null;
+                if (tab === 'WH_TO_STORE') return whIdOf(o.source_location_id) === my_wh;
                 return true;
               })
             : [];
@@ -309,7 +319,12 @@ export default function WhApprove() {
                 {filtered.map((o: any) => {
                   const isPublisher = tab === 'PUBLISHER_ORDER';
                   // 2026-05-14: REBALANCE 도 양측 협의 → 자기 wh 측 (SOURCE/TARGET) 자동 추론
-                  const side = tab === 'PUBLISHER_ORDER' ? ('FINAL' as const) : sideForOrder(o);
+                  // WH_TO_STORE: wh-manager 는 SOURCE 만 (자기 wh 본체).
+                  const side = tab === 'PUBLISHER_ORDER'
+                    ? ('FINAL' as const)
+                    : tab === 'WH_TO_STORE'
+                      ? (whIdOf(o.source_location_id) === my_wh ? ('SOURCE' as const) : null)
+                      : sideForOrder(o);
                   const readonly = !isToday;
                   const srcWh = whIdOf(o.source_location_id);
                   const tgtWh = whIdOf(o.target_location_id);
@@ -334,7 +349,7 @@ export default function WhApprove() {
                         )}
                       </td>
                       <td className="text-[11px]">
-                        {(o.order_type === 'REBALANCE' || o.order_type === 'WH_TRANSFER') && o.source_location_id != null && o.target_location_id != null ? (
+                        {(o.order_type === 'WH_TO_STORE' || o.order_type === 'REBALANCE' || o.order_type === 'WH_TRANSFER') && o.source_location_id != null && o.target_location_id != null ? (
                           <SideProgress
                             source={{
                               name: nameOf(o.source_location_id),

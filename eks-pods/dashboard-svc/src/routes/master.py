@@ -1565,3 +1565,117 @@ def curation(store_id: int, ctx: AuthContext = Depends(require_auth)):
             for r in rows
         ],
     }
+
+
+@router.get("/execution/by-location")
+def execution_by_location(
+    ctx: AuthContext = Depends(require_auth),
+    date: str | None = Query(default=None, description="YYYY-MM-DD KST · 생략 시 오늘"),
+):
+    """위치별 입·출고 실행 추적 (2026-05-14 신규).
+
+    오늘 (또는 지정 일자) 의 pending_orders APPROVED/EXECUTED/AUTO_EXECUTED row 를
+    source(-qty) / target(+qty) location 별로 집계.
+
+    role/scope 자동 필터:
+      - hq-admin: 전체
+      - wh-manager + scope_wh_id: 자기 wh 소속 location 만
+      - branch-clerk + scope_store_id: 자기 매장만
+
+    응답: items[] = {location_id, name, outbound_qty, inbound_qty, net_change,
+                     executed_count, approved_count, by_order_type{...}}
+    """
+    target_date = date or datetime.now(_KST).date().isoformat()
+
+    # 모든 4 order_type 의 source/target 별 집계
+    # status IN ('APPROVED', 'EXECUTED', 'AUTO_EXECUTED') · approved_at::date = target_date
+    sql = """
+        WITH active_orders AS (
+            SELECT
+                po.order_id, po.order_type, po.status,
+                po.source_location_id, po.target_location_id, po.qty,
+                po.approved_at, po.executed_at
+              FROM pending_orders po
+             WHERE po.status IN ('APPROVED', 'EXECUTED', 'AUTO_EXECUTED')
+               AND COALESCE(po.approved_at::date, po.created_at::date) = %s::date
+        ),
+        agg AS (
+            -- source side: 출고 (qty 양수로 외부 저장 · 응답 시 outbound_qty)
+            SELECT source_location_id AS location_id, order_type,
+                   SUM(qty)::int AS qty_sum,
+                   COUNT(*)::int AS cnt,
+                   COUNT(*) FILTER (WHERE status = 'EXECUTED')::int AS exec_cnt,
+                   'OUT' AS side
+              FROM active_orders
+             WHERE source_location_id IS NOT NULL
+             GROUP BY source_location_id, order_type
+            UNION ALL
+            SELECT target_location_id AS location_id, order_type,
+                   SUM(qty)::int AS qty_sum,
+                   COUNT(*)::int AS cnt,
+                   COUNT(*) FILTER (WHERE status = 'EXECUTED')::int AS exec_cnt,
+                   'IN' AS side
+              FROM active_orders
+             WHERE target_location_id IS NOT NULL
+             GROUP BY target_location_id, order_type
+        )
+        SELECT a.location_id, l.name, l.location_type, l.wh_id,
+               a.order_type, a.side, a.qty_sum, a.cnt, a.exec_cnt
+          FROM agg a
+          JOIN locations l ON l.location_id = a.location_id
+         WHERE 1 = 1
+    """
+    params: list = [target_date]
+
+    if ctx.role == "wh-manager" and ctx.scope_wh_id is not None:
+        sql += " AND l.wh_id = %s"
+        params.append(ctx.scope_wh_id)
+    elif ctx.role == "branch-clerk" and ctx.scope_store_id is not None:
+        sql += " AND a.location_id = %s"
+        params.append(ctx.scope_store_id)
+
+    sql += " ORDER BY a.location_id"
+
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+    # location_id 별 누적
+    by_loc: dict[int, dict] = {}
+    for r in rows:
+        loc_id, name, ltype, wh_id, ot, side, qty_sum, cnt, exec_cnt = r
+        cell = by_loc.setdefault(loc_id, {
+            "location_id": loc_id,
+            "name": name or f"loc {loc_id}",
+            "location_type": ltype,
+            "wh_id": wh_id,
+            "outbound_qty": 0,
+            "inbound_qty": 0,
+            "net_change": 0,
+            "executed_count": 0,
+            "approved_count": 0,
+            "by_order_type": {
+                "WH_TO_STORE":     {"outbound": 0, "inbound": 0},
+                "REBALANCE":       {"outbound": 0, "inbound": 0},
+                "WH_TRANSFER":     {"outbound": 0, "inbound": 0},
+                "PUBLISHER_ORDER": {"outbound": 0, "inbound": 0},
+            },
+        })
+        cell["approved_count"] += int(cnt or 0)
+        cell["executed_count"] += int(exec_cnt or 0)
+        if side == "OUT":
+            cell["outbound_qty"] += int(qty_sum or 0)
+            if ot in cell["by_order_type"]:
+                cell["by_order_type"][ot]["outbound"] += int(cnt or 0)
+        else:
+            cell["inbound_qty"] += int(qty_sum or 0)
+            if ot in cell["by_order_type"]:
+                cell["by_order_type"][ot]["inbound"] += int(cnt or 0)
+
+    for cell in by_loc.values():
+        cell["net_change"] = cell["inbound_qty"] - cell["outbound_qty"]
+
+    return {
+        "date": target_date,
+        "items": sorted(by_loc.values(), key=lambda x: (x["wh_id"] or 0, x["location_id"])),
+    }

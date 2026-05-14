@@ -18,7 +18,7 @@ import SearchBox from './SearchBox';
  *  - D-0 선택 시: 부모가 전달한 todayActions 영역 표시 (전체 승인 / 일괄 발의 등)
  */
 
-type OrderTypeOpt = 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
+type OrderTypeOpt = 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
 
 type HistoryItem = {
   status?: string | null;

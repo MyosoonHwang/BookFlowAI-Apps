@@ -22,11 +22,12 @@ import { useToast } from '../components/Toast';
  *   - 본사 hq-admin 의 강제 승인 권한 = 다른 역할이 처리 안 한 PENDING 을 즉시 APPROVED.
  */
 
-const STAGE_FROM_TYPE = (t: string): 1 | 2 | 3 =>
-  t === 'REBALANCE' ? 1 : t === 'WH_TRANSFER' ? 2 : 3;
+const STAGE_FROM_TYPE = (t: string): 0 | 1 | 2 | 3 =>
+  t === 'WH_TO_STORE' ? 0 : t === 'REBALANCE' ? 1 : t === 'WH_TRANSFER' ? 2 : 3;
 
 const STAGE_LABEL: Record<number, { name: string; color: string; desc: string }> = {
-  1: { name: '1단계 · 권역 내 재분배', color: 'pill-info',     desc: '같은 권역 내 매장끼리 재고 이동 — 물류센터 단독 승인' },
+  0: { name: '0단계 · 매장 보충 (WH→Store)', color: 'pill-info',     desc: '자기 wh 본체 → 자기 권역 매장 — wh-manager + branch-clerk 양측 협의' },
+  1: { name: '1단계 · 권역 내 재분배', color: 'pill-info',     desc: '같은 권역 내 매장끼리 재고 이동 — 양측 매장 승인' },
   2: { name: '2단계 · 권역 간 이동',   color: 'pill-pending', desc: '수도권 ↔ 영남 — 양쪽 권역 매니저 승인 필요' },
   3: { name: '3단계 · 외부 발주',      color: 'pill-rejected', desc: '출판사 신규 발주 — 비용 발생 · 본사/물류센터 자기 권역 승인' },
 };

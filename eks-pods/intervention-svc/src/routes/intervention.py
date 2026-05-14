@@ -1,15 +1,16 @@
-"""intervention routes - V6.2 3-stage decision authority enforcement.
+"""intervention routes - V6.2 4-stage decision authority enforcement (2026-05-14 Stage 0 추가).
 
-Stage / order_type / approval_side 행렬 (시트10 + 시트04 12 events · 2026-05-14 REBALANCE 양측 협의 정정):
+Stage / order_type / approval_side 행렬 (시트10 + 시트04 12 events · 2026-05-14 REBALANCE 양측 협의 + WH_TO_STORE 신규):
 
-| Stage | order_type        | approval_side    | 권한                                                    |
-|-------|-------------------|------------------|-------------------------------------------------------|
-| 1     | REBALANCE         | SOURCE / TARGET  | 해당 측 매장/창고 (양측 모두 승인 시 APPROVED)                 |
-| 2     | WH_TRANSFER       | SOURCE / TARGET  | wh-manager (SOURCE 면 source location 의 wh, 동일)         |
-| 3     | PUBLISHER_ORDER   | FINAL only       | hq-admin 만                                             |
+| Stage | order_type        | approval_side    | 권한                                                      |
+|-------|-------------------|------------------|---------------------------------------------------------|
+| 0     | WH_TO_STORE       | SOURCE / TARGET  | SOURCE: 자기 wh wh-manager · TARGET: 자기 매장 branch-clerk · hq-admin escalation |
+| 1     | REBALANCE         | SOURCE / TARGET  | 해당 측 매장/창고 (양측 모두 승인 시 APPROVED)                   |
+| 2     | WH_TRANSFER       | SOURCE / TARGET  | wh-manager (SOURCE 면 source location 의 wh, 동일)           |
+| 3     | PUBLISHER_ORDER   | FINAL only       | hq-admin / 자기 권역 wh-manager                              |
 
-Stage 1·2 양쪽 (SOURCE+TARGET) 모두 APPROVED → status=APPROVED 자동 전환.
-hq-admin 은 모든 stage 의 FINAL 권한 가짐 (escalation).
+Stage 0/1/2 양쪽 (SOURCE+TARGET) 모두 APPROVED → status=APPROVED 자동 전환.
+hq-admin 은 모든 stage 의 FINAL/SOURCE/TARGET 권한 가짐 (escalation).
 
 승인/거절 후 notification-svc /notification/send 호출 (시트04 12 events 정합):
   - approve → OrderApproved
@@ -154,7 +155,7 @@ def _adjust_source_inventory(cur, order_id: str, ctx: AuthContext, direction: in
     """Option B inventory 변동 helper.
     direction = -1: 승인 시 source -qty
     direction = +1: 거부/입고거부 시 source +qty 복원
-    REBALANCE / WH_TRANSFER 만 처리 (PUBLISHER_ORDER 는 source NULL).
+    WH_TO_STORE / REBALANCE / WH_TRANSFER 만 처리 (PUBLISHER_ORDER 는 source NULL).
     EXECUTED 후엔 호출 안 됨 (이미 매장 입고됨).
     """
     cur.execute(
@@ -165,7 +166,7 @@ def _adjust_source_inventory(cur, order_id: str, ctx: AuthContext, direction: in
     if not row:
         return
     ot, src, isbn, qty = row
-    if ot not in ("REBALANCE", "WH_TRANSFER") or src is None:
+    if ot not in ("WH_TO_STORE", "REBALANCE", "WH_TRANSFER") or src is None:
         return
     delta = direction * qty
     cur.execute(
@@ -183,9 +184,10 @@ def _validate_authority(cur, ctx: AuthContext, order_id: str, side: str) -> tupl
 
     Returns (order_type, source_wh, target_wh) for valid case. Raises 403 on violation.
 
-    Rules (2026-05-14 REBALANCE 양측 협의 정정):
-    - REBALANCE  : approval_side in ('SOURCE','TARGET') · 해당 측 매장/창고 · 양측 모두 승인 시 APPROVED
-    - WH_TRANSFER: approval_side in ('SOURCE','TARGET') · approver wh == 해당 side 의 wh
+    Rules (2026-05-14 REBALANCE 양측 협의 정정 + Stage 0 WH_TO_STORE 신규):
+    - WH_TO_STORE : approval_side in ('SOURCE','TARGET') · SOURCE=wh-manager(source_wh) / TARGET=branch-clerk(target_loc) · hq-admin escalation
+    - REBALANCE   : approval_side in ('SOURCE','TARGET') · 해당 측 매장/창고 · 양측 모두 승인 시 APPROVED
+    - WH_TRANSFER : approval_side in ('SOURCE','TARGET') · approver wh == 해당 side 의 wh
     - PUBLISHER_ORDER: approval_side='FINAL' only · hq-admin 또는 자기 권역 wh-manager
     - hq-admin escalation: 어느 stage 든 가능 (override)
     """
@@ -200,7 +202,34 @@ def _validate_authority(cur, ctx: AuthContext, order_id: str, side: str) -> tupl
     source_wh = _location_wh(cur, source_loc)
     target_wh = _location_wh(cur, target_loc)
 
-    if order_type == "REBALANCE":
+    if order_type == "WH_TO_STORE":
+        # Stage 0: 자기 wh 본체 → 자기 권역 매장. 양측 협의 (REBALANCE 와 동일 SOURCE/TARGET).
+        # SOURCE 승인자: wh-manager (source_wh == scope_wh_id)
+        # TARGET 승인자: branch-clerk (target_loc == scope_store_id)
+        # hq-admin escalation: 양측 모두 가능.
+        if side not in ("SOURCE", "TARGET"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="WH_TO_STORE 는 approval_side in ('SOURCE','TARGET') 만 허용 (양측 협의)")
+        if ctx.role == "hq-admin":
+            return order_type, source_wh, target_wh
+        if side == "SOURCE":
+            # source 측: wh-manager 자기 wh
+            if ctx.role != "wh-manager" or ctx.scope_wh_id is None:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail="WH_TO_STORE SOURCE 는 wh-manager 또는 hq-admin 만 승인 가능")
+            if ctx.scope_wh_id != source_wh:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"SOURCE 권한 없음 (scope wh_id={ctx.scope_wh_id} · source_wh={source_wh})")
+        else:  # TARGET
+            # target 측: branch-clerk 자기 매장
+            if ctx.role != "branch-clerk" or ctx.scope_store_id is None:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail="WH_TO_STORE TARGET 은 branch-clerk 또는 hq-admin 만 승인 가능")
+            if ctx.scope_store_id != target_loc:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"TARGET 권한 없음 (scope_store_id={ctx.scope_store_id} · target_loc={target_loc})")
+
+    elif order_type == "REBALANCE":
         # 2026-05-14: REBALANCE 도 WH_TRANSFER 와 동일하게 양측 협의 (SOURCE/TARGET 둘 다 승인)
         if side not in ("SOURCE", "TARGET"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -614,7 +643,7 @@ def _record_approval(conn, order_id: str, ctx: AuthContext, side: str, decision:
 
     # status 전환:
     #  - PUBLISHER_ORDER: FINAL APPROVED 1번 → APPROVED
-    #  - REBALANCE / WH_TRANSFER: SOURCE+TARGET 둘 다 APPROVED → APPROVED (양측 협의)
+    #  - WH_TO_STORE / REBALANCE / WH_TRANSFER: SOURCE+TARGET 둘 다 APPROVED → APPROVED (양측 협의)
     #  - REJECTED: 어느 side 든 한 번 거절 → REJECTED + reject_count++
     if decision == "APPROVED" and side == "FINAL":
         cur.execute(
@@ -634,7 +663,7 @@ def _record_approval(conn, order_id: str, ctx: AuthContext, side: str, decision:
             """,
             (order_id, order_id),
         )
-        # REBALANCE / WH_TRANSFER 양측 APPROVED 로 방금 전환된 경우만 source -qty + 최종 알림
+        # WH_TO_STORE / REBALANCE / WH_TRANSFER 양측 APPROVED 로 방금 전환된 경우만 source -qty + 최종 알림
         if cur.rowcount > 0:
             _adjust_source_inventory(cur, order_id, ctx, -1, "양측 승인 출고")
             # 2026-05-14: 양측 협의 최종 승인 — UI Toast / 시연 시 "출고 완료 · 입고 대기" 명확화
@@ -771,9 +800,9 @@ def approve_all_today(body: dict = Body(default={}), ctx: AuthContext = Depends(
 
     role 별 strict 권한 (단건 escalation 과 달리 hq-admin 도 자기 stage 만):
       - hq-admin    → PUBLISHER_ORDER (Stage 3 FINAL)
-      - wh-manager  → 자기 wh 의 REBALANCE/WH_TRANSFER/PUBLISHER_ORDER (target=자기)
-      - branch-clerk→ 자기 매장 target REBALANCE
-    body: {order_type?: 'REBALANCE'|'WH_TRANSFER'|'PUBLISHER_ORDER'} (UI 탭 필터)
+      - wh-manager  → 자기 wh 의 WH_TO_STORE/REBALANCE/WH_TRANSFER/PUBLISHER_ORDER (source/target=자기)
+      - branch-clerk→ 자기 매장 target WH_TO_STORE/REBALANCE
+    body: {order_type?: 'WH_TO_STORE'|'REBALANCE'|'WH_TRANSFER'|'PUBLISHER_ORDER'} (UI 탭 필터)
     response: {total_orders, ok, failed, errors}
     """
     order_type = body.get("order_type")
@@ -790,12 +819,15 @@ def approve_all_today(body: dict = Body(default={}), ctx: AuthContext = Depends(
         )
         params.extend([ctx.scope_wh_id, ctx.scope_wh_id])
     elif ctx.role == "branch-clerk" and ctx.scope_store_id is not None:
-        # REBALANCE 양측 협의 — 자기 매장이 source 또는 target 이면 자기 측 승인
+        # branch-clerk 일괄 승인:
+        #   - REBALANCE: 자기 매장이 source 또는 target (양측 협의)
+        #   - WH_TO_STORE: 자기 매장이 target (TARGET 측 입고 동의)
         where.append(
-            "po.order_type = 'REBALANCE'"
-            " AND (po.source_location_id = %s OR po.target_location_id = %s)"
+            "((po.order_type = 'REBALANCE'"
+            "   AND (po.source_location_id = %s OR po.target_location_id = %s))"
+            " OR (po.order_type = 'WH_TO_STORE' AND po.target_location_id = %s))"
         )
-        params.extend([ctx.scope_store_id, ctx.scope_store_id])
+        params.extend([ctx.scope_store_id, ctx.scope_store_id, ctx.scope_store_id])
     else:
         return {"total_orders": 0, "ok": 0, "failed": 0, "errors": ["권한 부족 (scope 미지정)"]}
     if order_type:
@@ -826,7 +858,7 @@ def approve_all_today(body: dict = Body(default={}), ctx: AuthContext = Depends(
                 "source_loc": sloc, "target_loc": tloc,
                 "source_wh": swh, "target_wh": twh,
             }
-            if ot in ("REBALANCE", "WH_TRANSFER"):
+            if ot in ("WH_TO_STORE", "REBALANCE", "WH_TRANSFER"):
                 for side in ("SOURCE", "TARGET"):
                     try:
                         _check_authority_rules(ctx, meta, side)
@@ -878,7 +910,24 @@ def _check_authority_rules(ctx: AuthContext, meta: dict, side: str) -> None:
     source_loc = meta.get("source_loc")
     target_loc = meta["target_loc"]
 
-    if order_type == "REBALANCE":
+    if order_type == "WH_TO_STORE":
+        # Stage 0: 자기 wh 본체 → 자기 권역 매장 (양측 협의)
+        if side not in ("SOURCE", "TARGET"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="WH_TO_STORE 는 SOURCE/TARGET 만 (양측 협의)")
+        if ctx.role == "hq-admin":
+            return
+        if side == "SOURCE":
+            if ctx.role != "wh-manager" or ctx.scope_wh_id is None or ctx.scope_wh_id != source_wh:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"SOURCE 권한 없음 (scope={ctx.scope_wh_id}/source_wh={source_wh})")
+            return
+        # TARGET
+        if ctx.role != "branch-clerk" or ctx.scope_store_id is None or ctx.scope_store_id != target_loc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"TARGET 권한 없음 (scope={ctx.scope_store_id}/target_loc={target_loc})")
+        return
+    elif order_type == "REBALANCE":
         # 2026-05-14: 양측 협의 (WH_TRANSFER 와 동일 패턴)
         if side not in ("SOURCE", "TARGET"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -992,7 +1041,7 @@ def _bulk_record_approvals(conn, valid_items: list[dict], ctx: AuthContext, deci
                 (final_oids,),
             )
             newly_approved_oids.extend(r[0] for r in cur.fetchall())
-        # REBALANCE / WH_TRANSFER SOURCE+TARGET 양측 APPROVED → APPROVED
+        # WH_TO_STORE / REBALANCE / WH_TRANSFER SOURCE+TARGET 양측 APPROVED → APPROVED
         wh_oids = list({it["order_id"] for it in valid_items if it["side"] in ("SOURCE", "TARGET")})
         if wh_oids:
             cur.execute(

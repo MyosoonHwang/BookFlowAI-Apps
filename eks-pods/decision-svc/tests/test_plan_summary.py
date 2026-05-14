@@ -134,6 +134,7 @@ class FakeCur:
                     r["qty"], r["urgency_level"],
                     r["approved_at"], r["executed_at"], r["reject_reason"],
                     r["created_at"],
+                    r.get("expected_arrival_date"),  # LEAD_DAYS 적용 결과 (fixture default None)
                 )
                 for r in scoped
             ]
