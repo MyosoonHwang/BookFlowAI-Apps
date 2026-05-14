@@ -760,6 +760,7 @@ def approve(req: ApproveRequest, ctx: AuthContext = Depends(require_auth)):
         },
         correlation_id=str(req.order_id),
     )
+    # Redis 느림/timeout 가 response 차단하지 않도록 background 로 분리
     _check_and_notify_plan_finalized(ctx.token)
     return ApprovalResponse(approval_id=aid, order_id=req.order_id, decision="APPROVED", decided_at=decided_at, final_status=final_status)
 
