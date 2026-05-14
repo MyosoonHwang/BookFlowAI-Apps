@@ -58,6 +58,18 @@ EVENT_CHANNEL = {
 }
 
 
+_LOGIC_APPS_EVENTS = {
+    "AutoExecutedUrgent", "DailyPlanFinalized", "SpikeUrgent",
+    "ApprovalDelayed", "InboundRejected", "NewBookRequest",
+    "LambdaAlarm", "DeploymentRollback",
+}
+
+
+def _needs_logic_apps(event_type: str) -> bool:
+    """Return whether this event should invoke Logic Apps email delivery."""
+    return event_type in _LOGIC_APPS_EVENTS
+
+
 async def _post_logic_apps(
     event_type: str,
     payload: dict,
@@ -92,10 +104,12 @@ async def send(req: SendRequest, ctx: AuthContext = Depends(require_auth)) -> Se
         except Exception as e:
             ok, err = False, str(e)[:120]
         new_status = "BUFFERED" if ok else "FAILED"
-    else:
+    elif _needs_logic_apps(req.event_type):
         recipients = get_recipients(req.event_type, req.payload_summary)
         ok, err = await _post_logic_apps(req.event_type, req.payload_summary, req.correlation_id, recipients)
         new_status = "SENT" if ok else "FAILED"
+    else:
+        ok, err, new_status = True, None, "SKIPPED"
 
     insert_sql = """
         INSERT INTO notifications_log
