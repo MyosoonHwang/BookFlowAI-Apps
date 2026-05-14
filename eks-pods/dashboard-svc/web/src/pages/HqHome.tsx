@@ -62,6 +62,8 @@ export default function HqHome() {
   });
 
   const items = pending.data?.items ?? [];
+  // 4-stage cascade (2026-05-14 Stage 0 WH_TO_STORE 추가)
+  const stage0 = items.filter((o) => o.order_type === 'WH_TO_STORE').length;
   const stage1 = items.filter((o) => o.order_type === 'REBALANCE').length;
   const stage2 = items.filter((o) => o.order_type === 'WH_TRANSFER').length;
   const stage3 = items.filter((o) => o.order_type === 'PUBLISHER_ORDER').length;
@@ -124,7 +126,7 @@ export default function HqHome() {
             클릭 → 처리하러 가기
             {grouped.data?.by_type && (
               <span className="ml-1">
-                · 재분배 {grouped.data.by_type.REBALANCE ?? 0} · 권역간 {grouped.data.by_type.WH_TRANSFER ?? 0} · 발주 {grouped.data.by_type.PUBLISHER_ORDER ?? 0}
+                · 🏬 {grouped.data.by_type.WH_TO_STORE ?? 0} · 🔄 {grouped.data.by_type.REBALANCE ?? 0} · 🚛 {grouped.data.by_type.WH_TRANSFER ?? 0} · 📦 {grouped.data.by_type.PUBLISHER_ORDER ?? 0}
               </span>
             )}
           </div>
@@ -142,7 +144,7 @@ export default function HqHome() {
           <div className="metric-label">📋 의사결정 처리</div>
           <div className="metric-value text-bf-warn">{totalPending}건</div>
           <div className="text-[11px] text-bf-muted mt-1">
-            1단계 {stage1} · 2단계 {stage2} · 3단계 {stage3}
+            🏬 {stage0} · 🔄 {stage1} · 🚛 {stage2} · 📦 {stage3}
             {urgentPending > 0 && <span className="text-bf-danger ml-1">· 긴급 {urgentPending}</span>}
           </div>
         </Link>
@@ -187,7 +189,11 @@ export default function HqHome() {
               </thead>
               <tbody>
                 {pendingTop.map((o) => {
-                  const stageLabel = o.order_type === 'REBALANCE' ? '재분배' : o.order_type === 'WH_TRANSFER' ? '권역간' : '발주';
+                  const stageLabel =
+                    o.order_type === 'WH_TO_STORE' ? '🏬 매장보충'
+                      : o.order_type === 'REBALANCE' ? '🔄 재분배'
+                      : o.order_type === 'WH_TRANSFER' ? '🚛 권역간'
+                      : '📦 발주';
                   const uColor = o.urgency_level === 'CRITICAL' ? 'text-bf-danger' : o.urgency_level === 'URGENT' ? 'text-bf-warn' : 'text-bf-muted';
                   return (
                     <tr key={o.order_id} className="border-t border-bf-border2 hover:bg-bf-panel2">

@@ -18,7 +18,7 @@ type Props = {
   status: 'PENDING' | 'APPROVED' | 'EXECUTED' | 'REJECTED' | 'AUTO_EXECUTED' | string;
   /** 양측 협의 진행 — frontend 에서 status + selfDone 으로 추정 (backend 미확장). */
   approvalSidesDone?: string[];
-  orderType?: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER' | string;
+  orderType?: 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER' | string;
   /** REJECTED 의 거부 시점 판단 (있으면 APPROVED 후 거부 → 재고 복원됨) */
   approvedAt?: string | null;
   className?: string;
@@ -31,7 +31,7 @@ export default function StatusBadge({
   approvedAt,
   className = '',
 }: Props) {
-  const isBothSides = orderType === 'REBALANCE' || orderType === 'WH_TRANSFER';
+  const isBothSides = orderType === 'WH_TO_STORE' || orderType === 'REBALANCE' || orderType === 'WH_TRANSFER';
   const partialDone = (approvalSidesDone?.length ?? 0) > 0 && (approvalSidesDone?.length ?? 0) < 2;
 
   let icon = '';

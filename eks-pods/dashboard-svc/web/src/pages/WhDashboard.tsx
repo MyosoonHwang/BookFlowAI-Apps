@@ -191,6 +191,50 @@ export default function WhDashboard() {
         || (tgt != null && (myStoreIds.has(tgt) || tgt === wh?.location_id));
   });
   const pendingCount = myPending.length;
+  // 4-stage cascade 분포 (2026-05-14 Stage 0 WH_TO_STORE 추가).
+  // 권역 매니저 시야: WH_TO_STORE=내 wh 본체 → 내 권역 매장 / WH_TRANSFER=내 권역 ↔ 다른 권역.
+  const myStage0 = myPending.filter((o) => o.order_type === 'WH_TO_STORE').length;
+  const myStage1 = myPending.filter((o) => o.order_type === 'REBALANCE').length;
+  const myStage2Out = myPending.filter(
+    (o) => o.order_type === 'WH_TRANSFER' && o.source_location_id != null && myStoreIds.has(o.source_location_id),
+  ).length;
+  const myStage2In = myPending.filter(
+    (o) => o.order_type === 'WH_TRANSFER' && o.target_location_id != null && (myStoreIds.has(o.target_location_id) || o.target_location_id === wh?.location_id),
+  ).length;
+  const myStage3 = myPending.filter((o) => o.order_type === 'PUBLISHER_ORDER').length;
+
+  // 받을 거 — 도착 예정일 별 group (forecast_rationale.expected_arrival_date)
+  // WH 본체 / 권역 매장이 TARGET 인 PENDING + APPROVED 묶음.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const myUpcomingArrival = (pending.data?.items ?? []).filter((o) => {
+    if (o.status !== 'PENDING' && o.status !== 'APPROVED') return false;
+    const t = o.target_location_id;
+    if (t == null) return false;
+    return myStoreIds.has(t) || t === wh?.location_id;
+  });
+  type WhArrivalBucket = { date: string; count: number; orders: typeof myUpcomingArrival };
+  const whArrivalBuckets: WhArrivalBucket[] = (() => {
+    const m = new Map<string, WhArrivalBucket>();
+    for (const o of myUpcomingArrival) {
+      const r = ((o as any).forecast_rationale ?? {}) as Record<string, unknown>;
+      const d = typeof r.expected_arrival_date === 'string' ? r.expected_arrival_date : null;
+      if (!d) continue;
+      if (!m.has(d)) m.set(d, { date: d, count: 0, orders: [] });
+      const b = m.get(d)!;
+      b.count += 1;
+      b.orders.push(o);
+    }
+    return [...m.values()].sort((a, b) => a.date.localeCompare(b.date));
+  })();
+  const whArrivalLabel = (iso: string): string => {
+    const t = new Date(todayIso + 'T00:00:00');
+    const d = new Date(iso + 'T00:00:00');
+    const diff = Math.round((d.getTime() - t.getTime()) / (24 * 3600 * 1000));
+    if (diff <= 0) return '오늘';
+    if (diff === 1) return '내일 (D+1)';
+    if (diff === 2) return '모레 (D+2)';
+    return `${diff}일 후 (D+${diff})`;
+  };
 
   // 입출고 대기 = APPROVED 상태로 실행 대기 중인 주문 (instructions)
   const instrPending = (ov.data?.pending_orders?.items ?? []).filter((o: any) => o.status === 'APPROVED').length;
@@ -303,7 +347,9 @@ export default function WhDashboard() {
         <Link to="/wh-approve" className={`metric-card hover:border-bf-primary transition ${pendingCount > 0 ? 'border-bf-warn' : ''}`}>
           <div className="metric-label">협의 필요 (PENDING)</div>
           <div className={`metric-value ${pendingCount > 0 ? 'text-bf-warn' : ''}`}>{pendingCount}건</div>
-          <div className="text-[11px] text-bf-muted mt-1">권역 매장 관련 주문</div>
+          <div className="text-[11px] text-bf-muted mt-1">
+            🏬 {myStage0} · 🔄 {myStage1} · 🚛 {myStage2Out}/{myStage2In} · 📦 {myStage3}
+          </div>
         </Link>
         <Link to="/wh-instructions" className="metric-card hover:border-bf-primary transition">
           <div className="metric-label">입출고 대기</div>
@@ -316,6 +362,45 @@ export default function WhDashboard() {
           <div className="text-[11px] text-bf-muted mt-1">결품 {totalZeroSku} · 1h 매출 ₩{Math.round(totalRev1h / 1000)}K</div>
         </div>
       </div>
+
+      {/* row 0.5 — 📥 받을 거 (도착 예정일 별 stage 별 lead time 반영) */}
+      {whArrivalBuckets.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="h2 text-sm">📥 받을 거 — 도착 예정일별</h2>
+            <span className="text-[10px] text-bf-muted">
+              D+1 매장 보충/재분배 · D+2 권역간 · D+4 외부 발주
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {whArrivalBuckets.map((b) => {
+              const types = new Set(b.orders.map((o) => o.order_type));
+              const typeLabel = [...types]
+                .map((t) =>
+                  t === 'WH_TO_STORE'    ? '🏬 매장보충' :
+                  t === 'REBALANCE'      ? '🔄 재분배' :
+                  t === 'WH_TRANSFER'    ? '🚛 권역간' :
+                  t === 'PUBLISHER_ORDER'? '📦 외부발주' : t,
+                ).join(' · ');
+              return (
+                <Link
+                  key={b.date}
+                  to="/wh-instructions"
+                  className="p-3 rounded-md border border-bf-border2 bg-bf-panel2 hover:border-bf-primary transition"
+                  title={`${b.count}건 도착 예정`}
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-xs font-semibold text-bf-primary">{whArrivalLabel(b.date)}</span>
+                    <span className="text-[10px] text-bf-muted">{b.date}</span>
+                  </div>
+                  <div className="mt-1 text-lg font-bold text-bf-text">{b.count}건</div>
+                  <div className="text-[11px] text-bf-muted mt-1">{typeLabel}</div>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* row 1 — 매장 매출 비교 + cascade funnel */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

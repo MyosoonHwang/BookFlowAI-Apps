@@ -134,7 +134,7 @@ export const fetchPending = (
   opts: {
     limit?: number;
     offset?: number;
-    order_type?: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
+    order_type?: 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
     wh_id?: number;
     /** 특정 일자 (YYYY-MM-DD KST) detail · lazy fetch. summary count 와 함께 사용 권장. */
     date?: string;
@@ -196,6 +196,9 @@ export type PlanItem = {
   executed_at: string | null;
   reject_reason: string | null;
   created_at: string;
+  // stage 별 lead time 반영 도착 예정일 (decision-svc 가 forecast_rationale 에 저장)
+  // REBALANCE/WH_TO_STORE: D+1 · WH_TRANSFER: D+2 · PUBLISHER_ORDER: D+4
+  expected_arrival_date: string | null;
 };
 export type PlanItemsResponse = { total: number; items: PlanItem[] };
 export const fetchPlanItems = (
@@ -239,7 +242,7 @@ export const fetchPendingSummary = (
   role: Role,
   opts: {
     days?: number;
-    order_type?: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
+    order_type?: 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
     wh_id?: number;
   } = {},
 ) => {
@@ -512,8 +515,8 @@ export const postIntervenebatch = (role: Role, action: 'approve' | 'reject', ite
 
 export type DecideResult = {
   order_id: string;
-  order_type: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
-  stage: 1 | 2 | 3;
+  order_type: 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER';
+  stage: 0 | 1 | 2 | 3;
   source_location_id: number | null;
   target_location_id: number;
   qty: number;
@@ -529,6 +532,7 @@ export const postDecide = (role: Role, body: { isbn13: string; target_location_i
 // 일괄 cascade (시연 + 매일 03:30 batch) — N items 한 번에 backend 처리
 export type CascadeBatchResult = {
   total: number;
+  s0?: number;  // WH_TO_STORE (2026-05-14 신규)
   s1: number;
   s2: number;
   s3: number;
@@ -564,7 +568,7 @@ export type ApproveAllResult = {
 };
 export const postApproveAllToday = (
   role: Role,
-  order_type?: 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER',
+  order_type?: 'WH_TO_STORE' | 'REBALANCE' | 'WH_TRANSFER' | 'PUBLISHER_ORDER',
 ) => postJson<ApproveAllResult>('/dashboard/intervene/approve-all-today', role, order_type ? { order_type } : {});
 
 // UX-6: 재고 수동 조정 (Manual 페이지) — inventory-svc /adjust 프록시.
@@ -802,6 +806,32 @@ export const fetchCategoryTrend = (role: Role, days = 30) =>
   getJson<{ days: number; categories: string[]; items: CategoryTrendItem[] }>(
     `/dashboard/sales/category-trend?days=${days}`, role,
   );
+
+// 위치별 실행 추적 (2026-05-14 신규) — pending_orders APPROVED/EXECUTED row 집계.
+// source(-) / target(+) qty 합산 + order_type 분포 + EXECUTED 건수.
+export type ExecutionLocationRow = {
+  location_id: number;
+  name: string;
+  location_type: string | null;
+  wh_id: number | null;
+  outbound_qty: number;     // source 측 출고 합 (음수 절댓값)
+  inbound_qty: number;      // target 측 입고 합 (양수)
+  net_change: number;       // inbound - outbound
+  executed_count: number;   // EXECUTED row 건수 (target 도착 완료)
+  approved_count: number;   // APPROVED + AUTO_EXECUTED row 건수
+  by_order_type: {          // order_type 별 (source/target) 건수
+    WH_TO_STORE: { outbound: number; inbound: number };
+    REBALANCE: { outbound: number; inbound: number };
+    WH_TRANSFER: { outbound: number; inbound: number };
+    PUBLISHER_ORDER: { outbound: number; inbound: number };
+  };
+};
+export const fetchExecutionByLocation = (role: Role, date?: string) => {
+  const qs = date ? `?date=${date}` : '';
+  return getJson<{ date: string; items: ExecutionLocationRow[] }>(
+    `/dashboard/execution/by-location${qs}`, role,
+  );
+};
 
 export type ForecastAccuracyItem = {
   date: string; mae: number; mape: number; total_predicted: number; total_actual: number;

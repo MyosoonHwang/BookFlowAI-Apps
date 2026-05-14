@@ -13,7 +13,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-OrderType = Literal["REBALANCE", "WH_TRANSFER", "PUBLISHER_ORDER"]
+OrderType = Literal["WH_TO_STORE", "REBALANCE", "WH_TRANSFER", "PUBLISHER_ORDER"]
 Urgency = Literal["NORMAL", "URGENT", "CRITICAL"]
 OrderStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXECUTED", "CANCELLED"]
 
@@ -40,17 +40,18 @@ class BatchDecideRequest(BaseModel):
 
 class BatchDecideResponse(BaseModel):
     total: int
-    s1: int
-    s2: int
-    s3: int
-    failed: int
+    s0: int = 0  # WH_TO_STORE (2026-05-14 신규)
+    s1: int = 0
+    s2: int = 0
+    s3: int = 0
+    failed: int = 0
     errors: list[str] = []
 
 
 class DecideResponse(BaseModel):
     order_id: UUID
     order_type: OrderType
-    stage: Literal[1, 2, 3]
+    stage: Literal[0, 1, 2, 3]
     source_location_id: int | None
     target_location_id: int
     qty: int

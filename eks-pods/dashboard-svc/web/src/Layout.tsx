@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { roleLabel, roleGroup, useRole, type Role } from './auth';
 import { useLiveStream } from './useLiveStream';
+import { useLiveInvalidate } from './useLiveInvalidate';
 import { useLocations } from './useLocations';
 
 type NavItem = { to: string; label: string; desc: string; allow: 'HQ' | 'WH' | 'BRANCH' | 'ALL' };
@@ -54,6 +55,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: '⚙️ 시스템 (감사·시연)',
     items: [
+      { to: '/execution',     label: '위치별 실행 추적', desc: '오늘 입·출고 (APPROVED + EXECUTED) 위치별 합산',  allow: 'ALL' },
       { to: '/notifications', label: '알림 이력',     desc: '주문 / 시스템 이벤트 송신 이력',          allow: 'ALL' },
       { to: '/live',          label: '실시간 이벤트', desc: '재고 변동 · 주문 · SNS 급등 실시간 스트림', allow: 'ALL' },
     ],
@@ -85,6 +87,7 @@ const PAGE_LABEL: Record<string, string> = {
   books: '도서 카탈로그',
   decision: '의사결정 현황',
   'final-plan': '최종 계획안',
+  execution: '위치별 실행 추적',
   approval: '승인 / 거절',
   returns: '반품 처리',
   requests: '신간 신청',
@@ -108,6 +111,8 @@ export default function Layout() {
   const nav = useNavigate();
   const loc = useLocation();
   const { status, counts } = useLiveStream(role);
+  // WS → TanStack Query 무효화 bridge — 다른 사용자의 행동도 sub-second 반영
+  useLiveInvalidate(role);
   const { nameOf } = useLocations(role ?? 'hq-admin');
 
   if (!role) return null;

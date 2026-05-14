@@ -1,14 +1,16 @@
-"""decision routes - V6.2 3-stage cascade 자동 결정.
+"""decision routes - V6.2 4-stage cascade 자동 결정 (2026-05-14 Stage 0 추가).
 
 POST /decide:
   Input: isbn13 · target_location_id · qty
-  Algorithm:
-    Stage 1 (REBALANCE): target wh 내 다른 location 중 가용 ≥ qty 있는가?
-    Stage 2 (WH_TRANSFER): 다른 wh 의 warehouse location 가용 ≥ qty?
-    Stage 3 (PUBLISHER_ORDER): 위 둘 다 불가 → 외부 발주 (HQ FINAL 승인 필요)
+  Algorithm (target_type=STORE_OFFLINE):
+    Stage 0 (WH_TO_STORE): 자기 wh 본체 (location_type='WH') 의 effective_surplus ≥ qty?
+    Stage 1 (REBALANCE):   target wh 내 다른 매장 중 가용 ≥ qty?
+    Stage 2 (WH_TRANSFER): 다른 권역 wh 본체 가용 ≥ qty?
+    Stage 3 (PUBLISHER_ORDER): 위 모두 불가 → 외부 발주
+  target_type=WH 면 Stage 0/1 skip · Stage 2/3 만.
   Auto-derive:
     - urgency_level: stock_days_remaining (forecast_cache 기반) < 1 → URGENT, < 0.5 → CRITICAL
-    - auto_execute_eligible: Stage 1 + URGENT/CRITICAL → True
+    - auto_execute_eligible: Stage 3 + URGENT/CRITICAL → True
 
 Output: DecideResponse (order_id, stage, order_type, source/target, urgency, rationale)
 
@@ -40,6 +42,28 @@ from ..models import (
 PLAN_SAFETY_DAYS = 5      # 매장 desired = predicted_demand × SAFETY_DAYS
 PLAN_WH_BUFFER_DAYS = 2   # WH 본체 desired = sum(same-wh stores predicted) × BUFFER_DAYS
 PLAN_MIN_ROW_QTY = 5      # 너무 작은 발의는 묶거나 스킵 (운송 효율)
+
+# Stage 별 lead time (발의일 → 도착 예정일) — UI 도착일 별 grouping + 실측치
+# WH_TO_STORE/REBALANCE: 익일 운송 (D+1) · WH_TRANSFER: 권역간 2일 (D+2)
+# PUBLISHER_ORDER: 외부 발주 3일 + 익일 처리 (D+4)
+# 발의는 모두 발의일 (D+0) 처리 · 입고 (EXECUTED) 시점만 expected_arrival_date 에 발생.
+LEAD_DAYS: dict[str, int] = {
+    "REBALANCE": 1,
+    "WH_TO_STORE": 1,
+    "WH_TRANSFER": 2,
+    "PUBLISHER_ORDER": 4,
+}
+
+
+def _expected_arrival(order_type: str, base: date | None = None) -> str:
+    """order_type 의 LEAD_DAYS 를 base (default=today) 에 더한 ISO date string.
+
+    /decide: base=date.today() · /plan-daily: base=snapshot_date.
+    LEAD_DAYS 미정의 order_type 은 1일 fallback (안전).
+    """
+    base_date = base if base is not None else date.today()
+    days = LEAD_DAYS.get(order_type, 1)
+    return (base_date + timedelta(days=days)).isoformat()
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/decision", tags=["decision"])
@@ -158,6 +182,60 @@ def _partner_surplus(
     safety = int(safety_stock or 0)
     demand = max(0, int(expected_demand or 0))
     return on_hand - reserved - safety - demand
+
+
+def _stage0_source(cur, isbn13: str, target_wh: int, qty: int) -> int | None:
+    """Stage 0 (2026-05-14 신규): 자기 wh 본체 (location_type='WH') 의 매장 보충 가용.
+
+    target_type=STORE_OFFLINE 일 때 자기 권역 wh 본체에서 매장으로 바로 보낼 수 있는지 먼저 확인.
+    Stage 1 (매장 ↔ 매장 재분배) 보다 우선순위 높음 — wh 본체 잉여가 자연 흐름.
+
+    effective_available = on_hand - reserved - incoming - max(0, expected_demand_14d).
+    Stage 1 과 동일 정의이지만 safety_stock 은 차감 안 함 (자기 wh 본체는 자기 권역 매장에 자유롭게 보낼 수 있음).
+    가장 여유 큰 wh 본체 location 반환.
+    """
+    cur.execute(
+        """
+        WITH stage0_candidates AS (
+            SELECT
+                i.location_id,
+                i.on_hand,
+                i.reserved_qty,
+                COALESCE((
+                    SELECT SUM(po.qty)
+                      FROM pending_orders po
+                     WHERE po.target_location_id = i.location_id
+                       AND po.isbn13 = i.isbn13
+                       AND po.status = 'APPROVED'
+                       AND po.executed_at IS NULL
+                ), 0) AS incoming_qty,
+                COALESCE((
+                    SELECT SUM(fc.predicted_demand)
+                      FROM forecast_cache fc
+                     WHERE fc.isbn13 = i.isbn13
+                       AND fc.store_id = i.location_id
+                       AND fc.snapshot_date >= CURRENT_DATE
+                       AND fc.snapshot_date <  CURRENT_DATE + INTERVAL '14 days'
+                ), 0) AS expected_demand_14d
+              FROM inventory i
+              JOIN locations l ON l.location_id = i.location_id
+              JOIN books b     ON b.isbn13 = i.isbn13
+             WHERE l.wh_id = %s
+               AND l.location_type = 'WH'
+               AND i.isbn13 = %s
+               AND b.active = TRUE
+        )
+        SELECT location_id,
+               (on_hand - reserved_qty - incoming_qty - GREATEST(0, expected_demand_14d)) AS effective_available
+          FROM stage0_candidates
+         WHERE (on_hand - reserved_qty - incoming_qty - GREATEST(0, expected_demand_14d)) >= %s
+         ORDER BY effective_available DESC
+         LIMIT 1
+        """,
+        (target_wh, isbn13, qty),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
 
 
 def _stage1_source(cur, isbn13: str, target_wh: int, target_location_id: int, qty: int) -> int | None:
@@ -390,31 +468,40 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
                     detail=f"비활성 도서 (active={book_row[0]} · discontinue_mode={book_row[1]}) 는 의사결정 불가",
                 )
 
-            # Cascade
-            stage_num: Literal[1, 2, 3]
+            # Cascade (4-stage · 2026-05-14: Stage 0 WH_TO_STORE 추가)
+            stage_num: Literal[0, 1, 2, 3]
             order_type: str
             source_loc: int | None
 
-            # Stage 1 (REBALANCE) 은 매장↔매장 만. target 이 WH 본체 / 온라인(virtual) 이면 스킵.
-            s1 = (
-                _stage1_source(cur, req.isbn13, target_wh, req.target_location_id, req.qty)
+            # Stage 0 (WH_TO_STORE) + Stage 1 (REBALANCE) 는 target=STORE_OFFLINE 일 때만.
+            # target 이 WH 본체 / 온라인(virtual) 이면 Stage 2/3 만.
+            s0 = (
+                _stage0_source(cur, req.isbn13, target_wh, req.qty)
                 if target_type == "STORE_OFFLINE"
                 else None
             )
             stage2_info: dict | None = None
-            if s1 is not None:
-                stage_num, order_type, source_loc = 1, "REBALANCE", s1
+            if s0 is not None:
+                stage_num, order_type, source_loc = 0, "WH_TO_STORE", s0
             else:
-                stage2_info = _stage2_source(cur, req.isbn13, target_wh, req.qty)
-                if stage2_info is not None:
-                    stage_num, order_type, source_loc = 2, "WH_TRANSFER", stage2_info["location_id"]
+                s1 = (
+                    _stage1_source(cur, req.isbn13, target_wh, req.target_location_id, req.qty)
+                    if target_type == "STORE_OFFLINE"
+                    else None
+                )
+                if s1 is not None:
+                    stage_num, order_type, source_loc = 1, "REBALANCE", s1
                 else:
-                    if not allow_publisher_order:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"재고 소진 모드 도서 (discontinue_mode={book_row[1]}) 는 신규 출판사 발주 불가 · 권역내 재분배·권역간 이동만 가능",
-                        )
-                    stage_num, order_type, source_loc = 3, "PUBLISHER_ORDER", None
+                    stage2_info = _stage2_source(cur, req.isbn13, target_wh, req.qty)
+                    if stage2_info is not None:
+                        stage_num, order_type, source_loc = 2, "WH_TRANSFER", stage2_info["location_id"]
+                    else:
+                        if not allow_publisher_order:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"재고 소진 모드 도서 (discontinue_mode={book_row[1]}) 는 신규 출판사 발주 불가 · 권역내 재분배·권역간 이동만 가능",
+                            )
+                        stage_num, order_type, source_loc = 3, "PUBLISHER_ORDER", None
 
             urgency, rationale = _calc_urgency(cur, req.isbn13, req.target_location_id, req.qty)
             rationale.update({"stage": stage_num, "selected_order_type": order_type, "source_location_id": source_loc})
@@ -452,6 +539,9 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
             # auto_execute_eligible: FR-A4.7 = Stage 3 (PUBLISHER_ORDER) + URGENT/CRITICAL
             # 07:00 KST intervention-svc CronJob 이 auto_execute_eligible=TRUE row 일괄 자동 승인 + 발주
             auto_exec = _auto_execute_eligible(stage_num, urgency)
+
+            # 도착 예정일 (stage 별 lead time) — UI 가 도착일 별 group 해서 표시
+            rationale["expected_arrival_date"] = _expected_arrival(order_type)
 
             cur.execute(
                 """
@@ -524,20 +614,35 @@ def decide(req: DecideRequest, ctx: AuthContext = Depends(require_auth)):
 
 @router.get("/pending-orders", response_model=PendingOrdersResponse)
 def list_pending(
-    _: AuthContext = Depends(require_auth),
+    ctx: AuthContext = Depends(require_auth),
     limit: int = Query(default=50, ge=1, le=500),
 ):
-    """PENDING 큐 (raw · role 필터 없음). 권한 분리된 큐는 intervention-svc /intervention/queue 사용."""
-    sql = """
-        SELECT order_id, order_type, isbn13, source_location_id, target_location_id,
-               qty, urgency_level, status, created_at
-          FROM pending_orders
-         WHERE status = 'PENDING'
-         ORDER BY urgency_level DESC, created_at ASC
+    """PENDING 큐 — role/scope 자동 필터 (2026-05-14 정정).
+
+    - hq-admin: 전체
+    - wh-manager + scope_wh_id: source 또는 target wh = scope_wh_id
+    - branch-clerk + scope_store_id: target_location_id = scope_store_id
+
+    상세 승인 워크플로우 (PENDING/APPROVED/EXECUTED) 는 intervention-svc /intervention/queue.
+    """
+    where = ["po.status = 'PENDING'"]
+    params: list = []
+    scope_clause, scope_params = _plan_scope_clause(ctx)
+    if scope_clause:
+        where.append(scope_clause)
+        params.extend(scope_params)
+    params.append(limit)
+
+    sql = f"""
+        SELECT po.order_id, po.order_type, po.isbn13, po.source_location_id, po.target_location_id,
+               po.qty, po.urgency_level, po.status, po.created_at
+          FROM pending_orders po
+         WHERE {' AND '.join(where)}
+         ORDER BY po.urgency_level DESC, po.created_at ASC
          LIMIT %s
     """
     with db_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (limit,))
+        cur.execute(sql, params)
         rows = cur.fetchall()
 
     items = [
@@ -563,7 +668,7 @@ def decide_batch(req: BatchDecideRequest, ctx: AuthContext = Depends(require_aut
     if ctx.role not in ("hq-admin", "wh-manager"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="hq-admin 또는 wh-manager 만 batch 결정 가능")
 
-    counts = {"s1": 0, "s2": 0, "s3": 0}
+    counts = {"s0": 0, "s1": 0, "s2": 0, "s3": 0}
     failed = 0
     errors: list[str] = []
     for it in req.items:
@@ -582,7 +687,7 @@ def decide_batch(req: BatchDecideRequest, ctx: AuthContext = Depends(require_aut
 
     return BatchDecideResponse(
         total=len(req.items),
-        s1=counts["s1"], s2=counts["s2"], s3=counts["s3"],
+        s0=counts["s0"], s1=counts["s1"], s2=counts["s2"], s3=counts["s3"],
         failed=failed, errors=errors,
     )
 
@@ -713,6 +818,41 @@ def _build_daily_plan(cur, snapshot_date: date) -> list[dict]:
                 "gap": gap, "effective": effective, "desired": desired,
                 "type": meta["type"], "wh": meta["wh"],
             }
+
+        # Phase 0 (2026-05-14 신규): same-wh WH body → STORE (WH_TO_STORE).
+        # 자기 wh 본체 잉여로 매장 부족을 먼저 보충 (Stage 1 매장↔매장 보다 자연스러운 흐름).
+        for wh_id, store_list in wh_to_stores.items():
+            wb = wh_body.get(wh_id)
+            if wb is None or wb not in gaps:
+                continue
+            wb_g = gaps[wb]
+            if wb_g["gap"] >= 0:
+                continue  # wh 본체도 부족 (gap > 0) 이거나 정확히 desired = effective
+            wb_avail = -wb_g["gap"]  # positive surplus of wh body
+            # 매장 부족 (gap > 0) 큰 순으로 채움
+            shorts = sorted(
+                [(l, gaps[l]) for l in store_list if l in gaps and gaps[l]["gap"] > 0],
+                key=lambda x: -x[1]["gap"],
+            )
+            for tgt_loc, tgt_g in shorts:
+                if wb_avail <= 0:
+                    break
+                if tgt_g["gap"] <= 0:
+                    continue
+                take = min(wb_avail, tgt_g["gap"])
+                if take >= PLAN_MIN_ROW_QTY:
+                    plan.append({
+                        "order_type": "WH_TO_STORE", "isbn": isbn,
+                        "src": wb, "tgt": tgt_loc, "qty": take, "stage": 0,
+                        "rationale": {
+                            "phase": "stage0_wh_to_store",
+                            "src_effective": wb_g["effective"], "src_desired": wb_g["desired"],
+                            "tgt_effective": tgt_g["effective"], "tgt_desired": tgt_g["desired"],
+                        },
+                    })
+                wb_avail -= take
+                tgt_g["gap"] -= take
+            wb_g["gap"] = -wb_avail
 
         # Phase A: same-wh store-to-store REBALANCE
         for wh_id, store_list in wh_to_stores.items():
@@ -889,6 +1029,8 @@ def plan_daily(
                     "selected_order_type": p["order_type"],
                     "source_location_id": p["src"],
                     "plan_snapshot_date": str(snapshot_date),
+                    # 도착 예정일 (snapshot_date + stage 별 lead time) — UI grouping
+                    "expected_arrival_date": _expected_arrival(p["order_type"], snapshot_date),
                 }
                 insert_rows.append((
                     order_id, p["order_type"], p["isbn"], p["src"], p["tgt"],
@@ -919,7 +1061,7 @@ def plan_daily(
             )
         conn.commit()
 
-    by_stage: dict[int, int] = {1: 0, 2: 0, 3: 0}
+    by_stage: dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
     isbns_set: set[str] = set()
     for p in plan:
         by_stage[p["stage"]] = by_stage.get(p["stage"], 0) + 1
@@ -992,7 +1134,7 @@ def plan_daily_summary(snapshot_date: str, ctx: AuthContext = Depends(require_au
     ]
     total_orders = sum(int(r[2]) for r in rows)
     total_qty = sum(int(r[3]) for r in rows)
-    stages: dict[str, int] = {"REBALANCE": 0, "WH_TRANSFER": 0, "PUBLISHER_ORDER": 0}
+    stages: dict[str, int] = {"WH_TO_STORE": 0, "REBALANCE": 0, "WH_TRANSFER": 0, "PUBLISHER_ORDER": 0}
     statuses: dict[str, int] = {
         "PENDING": 0, "APPROVED": 0, "EXECUTED": 0, "REJECTED": 0, "AUTO_EXECUTED": 0,
     }
@@ -1069,7 +1211,8 @@ def plan_daily_items(
                po.target_location_id, tl.name,
                po.qty, po.urgency_level,
                po.approved_at, po.executed_at, po.reject_reason,
-               po.created_at
+               po.created_at,
+               po.forecast_rationale->>'expected_arrival_date' AS expected_arrival_date
           {base_from}
          WHERE {where_sql}
          ORDER BY po.created_at DESC
@@ -1101,6 +1244,8 @@ def plan_daily_items(
             "executed_at": r[12].isoformat() if r[12] else None,
             "reject_reason": r[13],
             "created_at": r[14].isoformat() if r[14] else None,
+            # forecast_rationale->>'expected_arrival_date' (LEAD_DAYS 적용 결과)
+            "expected_arrival_date": r[15] if len(r) > 15 else None,
         }
         for r in rows
     ]

@@ -25,9 +25,10 @@ import StatusBadge from '../components/StatusBadge';
  */
 
 const ORDER_TYPES: { key: string; label: string }[] = [
-  { key: 'REBALANCE',       label: '권역 내 재분배 (Stage 1)' },
-  { key: 'WH_TRANSFER',     label: '권역 간 이동 (Stage 2)' },
-  { key: 'PUBLISHER_ORDER', label: '외부 발주 (Stage 3)' },
+  { key: 'WH_TO_STORE',     label: '🏬 매장 보충 (Stage 0)' },
+  { key: 'REBALANCE',       label: '🔄 권역 내 재분배 (Stage 1)' },
+  { key: 'WH_TRANSFER',     label: '🚛 권역 간 이동 (Stage 2)' },
+  { key: 'PUBLISHER_ORDER', label: '📦 외부 발주 (Stage 3)' },
 ];
 
 const STATUSES: { key: string; label: string; tone: string }[] = [
@@ -47,13 +48,22 @@ function defaultSnapshotDate(): string {
   return kst.toISOString().slice(0, 10);
 }
 
+// Stage 별 LEAD_DAYS group — decision-svc LEAD_DAYS 와 동일 (UI 카드 라벨 + group 키)
+const ARRIVAL_GROUPS: { days: number; label: string; types: string[] }[] = [
+  { days: 1, label: '내일 도착 (D+1)',  types: ['WH_TO_STORE', 'REBALANCE'] },
+  { days: 2, label: '모레 도착 (D+2)',  types: ['WH_TRANSFER'] },
+  { days: 4, label: '4일 후 도착 (D+4)', types: ['PUBLISHER_ORDER'] },
+];
+
 export default function FinalPlan() {
   const { role } = useOutletContext<{ role: Role }>();
   const [snapshotDate, setSnapshotDate] = useState<string>(defaultSnapshotDate());
-  const [tab, setTab] = useState<'all' | 'approval' | 'result'>('all');
+  const [tab, setTab] = useState<'all' | 'approval' | 'result' | 'arrival'>('all');
   const [searchQ, setSearchQ] = useState<string>('');
   // Tab 1 의 cell-driven 필터 (cell 클릭 시 set)
   const [cellFilter, setCellFilter] = useState<{ order_type?: string; status?: string }>({});
+  // Tab 4 의 도착일 group 필터 (카드 클릭 시 set · undefined=전체)
+  const [arrivalFilter, setArrivalFilter] = useState<number | undefined>(undefined);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 50;
 
@@ -69,8 +79,19 @@ export default function FinalPlan() {
   const listParams = useMemo<{ status?: string; order_type?: string }>(() => {
     if (tab === 'all') return cellFilter;
     if (tab === 'approval') return { status: 'PENDING' };
+    if (tab === 'arrival') {
+      // 카드 클릭으로 group 필터 → 해당 group 의 order_type 중 하나만 backend 에 전달.
+      // 한 group 이 여러 order_type (D+1: WH_TO_STORE + REBALANCE) 인 경우 client-side 추가 필터.
+      if (arrivalFilter !== undefined) {
+        const grp = ARRIVAL_GROUPS.find((g) => g.days === arrivalFilter);
+        if (grp && grp.types.length === 1) {
+          return { order_type: grp.types[0] };
+        }
+      }
+      return {};
+    }
     return {}; // 'result' tab — EXECUTED + REJECTED 둘 다 표시 (아래에서 client-side split)
-  }, [tab, cellFilter]);
+  }, [tab, cellFilter, arrivalFilter]);
 
   const items = useQuery({
     queryKey: ['plan-items', role, snapshotDate, tab, listParams, searchQ, page],
@@ -90,9 +111,17 @@ export default function FinalPlan() {
   // (PENDING/APPROVED 는 다른 탭에서 처리)
   const rawItems = items.data?.items ?? [];
   const visibleItems: PlanItem[] = useMemo(() => {
-    if (tab !== 'result') return rawItems;
-    return rawItems.filter((it) => it.status === 'EXECUTED' || it.status === 'REJECTED');
-  }, [tab, rawItems]);
+    if (tab === 'result') {
+      return rawItems.filter((it) => it.status === 'EXECUTED' || it.status === 'REJECTED');
+    }
+    if (tab === 'arrival' && arrivalFilter !== undefined) {
+      const grp = ARRIVAL_GROUPS.find((g) => g.days === arrivalFilter);
+      if (grp) {
+        return rawItems.filter((it) => grp.types.includes(it.order_type));
+      }
+    }
+    return rawItems;
+  }, [tab, rawItems, arrivalFilter]);
 
   // 최근 5분 APPROVED — approval 탭 타임라인 용 (rawItems 가 PENDING 만이라 별도 query 필요)
   const recentApproved = useQuery({
@@ -196,9 +225,10 @@ export default function FinalPlan() {
       {/* Tab nav */}
       <div className="flex gap-2 border-b border-bf-border">
         {[
-          { key: 'all',      label: '전체 계획안',  hint: '4 단계 × 5 상태 매트릭스' },
-          { key: 'approval', label: '승인 진행',    hint: '대기 중 + 최근 승인 타임라인' },
-          { key: 'result',   label: '실행 결과',    hint: '완료 / 거절 (사유)' },
+          { key: 'all',      label: '전체 계획안',     hint: '4 단계 (Stage 0~3) × 5 상태 매트릭스' },
+          { key: 'approval', label: '승인 진행',       hint: '대기 중 + 최근 승인 타임라인' },
+          { key: 'result',   label: '실행 결과',       hint: '완료 / 거절 (사유)' },
+          { key: 'arrival',  label: '📅 도착 예정일별', hint: 'stage 별 lead time 반영 — D+1 / D+2 / D+4' },
         ].map((t) => (
           <button
             key={t.key}
@@ -207,7 +237,12 @@ export default function FinalPlan() {
                 ? 'border-bf-primary text-bf-primary font-semibold'
                 : 'border-transparent text-bf-muted hover:text-bf-text'
             }`}
-            onClick={() => { setTab(t.key as 'all' | 'approval' | 'result'); setPage(1); setCellFilter({}); }}
+            onClick={() => {
+              setTab(t.key as 'all' | 'approval' | 'result' | 'arrival');
+              setPage(1);
+              setCellFilter({});
+              setArrivalFilter(undefined);
+            }}
             title={t.hint}
           >
             {t.label}
@@ -403,6 +438,70 @@ export default function FinalPlan() {
         </>
       )}
 
+      {/* Tab 4 — 도착 예정일별 카드 (stage 별 lead time 반영) */}
+      {tab === 'arrival' && (
+        <div className="card">
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="h2 flex items-center">
+              📅 도착 예정일별 보기
+              <HelpHint text="발의 (승인) 는 모두 발의일에 결정됩니다. 입고 (도착) 만 stage 별 lead time 에 발생: D+1 (매장 보충/재분배) · D+2 (권역간 이동) · D+4 (외부 발주)." />
+            </h2>
+            {arrivalFilter !== undefined && (
+              <button
+                className="btn-secondary btn-sm ml-2"
+                onClick={() => { setArrivalFilter(undefined); setPage(1); }}
+              >
+                필터 해제
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {ARRIVAL_GROUPS.map((g) => {
+              const cnt = g.types.reduce(
+                (acc, ot) =>
+                  acc + STATUSES.reduce((a, s) => a + countOf(ot, s.key), 0),
+                0,
+              );
+              const qty = g.types.reduce(
+                (acc, ot) =>
+                  acc + STATUSES.reduce((a, s) => a + qtyOf(ot, s.key), 0),
+                0,
+              );
+              const selected = arrivalFilter === g.days;
+              const typeLabels = g.types.map((t) => ko(ORDER_TYPE_KO, t)).join(' / ');
+              return (
+                <button
+                  key={g.days}
+                  className={`metric-card text-left transition ${
+                    cnt === 0
+                      ? 'opacity-60 cursor-not-allowed'
+                      : selected
+                        ? 'border-bf-primary ring-2 ring-bf-primary'
+                        : 'hover:border-bf-primary'
+                  }`}
+                  disabled={cnt === 0}
+                  onClick={() => {
+                    if (cnt === 0) return;
+                    setArrivalFilter((prev) => (prev === g.days ? undefined : g.days));
+                    setPage(1);
+                  }}
+                  title={`${g.label} · ${typeLabels}`}
+                >
+                  <div className="metric-label">{g.label}</div>
+                  <div className="metric-value">{cnt}건</div>
+                  <div className="text-[11px] text-bf-muted mt-1">
+                    {qty.toLocaleString()}권 · {typeLabels}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-[11px] text-bf-muted mt-2">
+            카드 클릭 시 해당 도착일의 plan list 가 아래에 표시됩니다.
+          </div>
+        </div>
+      )}
+
       {/* Tab 3 inventory delta summary — APPROVED/EXECUTED 의 source(-) / target(+) 합산 */}
       {tab === 'result' && inventoryDelta.length > 0 && (
         <div className="card">
@@ -447,7 +546,11 @@ export default function FinalPlan() {
                 ? '전체 plan (단계 × 상태 cell 을 누르면 필터됩니다)'
                 : tab === 'approval'
                   ? '대기 중 (PENDING) list — 5초마다 자동 갱신'
-                  : '실행 결과 (EXECUTED + REJECTED)'}
+                  : tab === 'arrival'
+                    ? (arrivalFilter !== undefined
+                        ? `상세 list (${ARRIVAL_GROUPS.find((g) => g.days === arrivalFilter)?.label})`
+                        : '전체 plan (도착일 카드를 누르면 필터됩니다)')
+                    : '실행 결과 (EXECUTED + REJECTED)'}
           </h2>
           {items.data && (
             <span className="text-xs text-bf-muted">
@@ -477,6 +580,7 @@ export default function FinalPlan() {
                 <th>출발 → 도착</th>
                 <th className="text-right">수량</th>
                 <th>생성</th>
+                {tab === 'arrival' && <th>도착 예정일</th>}
                 {tab === 'result' && <th>처리 일시 / 사유</th>}
               </tr>
             </thead>
@@ -511,6 +615,11 @@ export default function FinalPlan() {
                     <td className="text-bf-muted text-[10px]">
                       {it.created_at ? new Date(it.created_at).toLocaleString('ko-KR') : '-'}
                     </td>
+                    {tab === 'arrival' && (
+                      <td className="text-[11px] font-medium text-bf-primary">
+                        {it.expected_arrival_date ?? '-'}
+                      </td>
+                    )}
                     {tab === 'result' && (
                       <td className="text-[10px]">
                         {it.status === 'EXECUTED' && it.executed_at && (

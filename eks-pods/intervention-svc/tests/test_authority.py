@@ -233,3 +233,71 @@ def test_wh_transfer_branch_clerk_403():
     with pytest.raises(HTTPException) as e:
         _validate_authority(cur, _ctx("branch-clerk", scope_store_id=3), "x", "TARGET")
     assert e.value.status_code == 403
+
+
+# ─── WH_TO_STORE (Stage 0 · 2026-05-14 신규 · 양측 협의) ───────────────────
+# SOURCE: 자기 wh 본체 → wh-manager (source_wh == scope_wh_id)
+# TARGET: 자기 매장        → branch-clerk (target_loc == scope_store_id)
+# hq-admin escalation: 양측 모두 OK
+def test_wh_to_store_wh_manager_source_ok():
+    # source_loc=1 (wh1 본체), target_loc=3 (wh1 매장). wh-manager-1 SOURCE → OK
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    ot, sw, tw = _validate_authority(cur, _ctx("wh-manager", 1), "x", "SOURCE")
+    assert ot == "WH_TO_STORE" and sw == 1 and tw == 1
+
+
+def test_wh_to_store_wh_manager_target_403():
+    """wh-manager 가 TARGET 측 승인 시도 → 403 (TARGET 은 branch-clerk 의 영역)"""
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("wh-manager", 1), "x", "TARGET")
+    assert e.value.status_code == 403
+
+
+def test_wh_to_store_wh_manager_other_wh_source_403():
+    """다른 권역 wh-manager 가 SOURCE 시도 → 403"""
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("wh-manager", 2), "x", "SOURCE")
+    assert e.value.status_code == 403
+
+
+def test_wh_to_store_branch_clerk_target_ok():
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    ot, *_ = _validate_authority(cur, _ctx("branch-clerk", scope_store_id=3), "x", "TARGET")
+    assert ot == "WH_TO_STORE"
+
+
+def test_wh_to_store_branch_clerk_source_403():
+    """branch-clerk 가 SOURCE 시도 → 403 (SOURCE 는 wh-manager 영역)"""
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("branch-clerk", scope_store_id=3), "x", "SOURCE")
+    assert e.value.status_code == 403
+
+
+def test_wh_to_store_branch_clerk_other_store_target_403():
+    """다른 매장 branch-clerk → 403"""
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("branch-clerk", scope_store_id=4), "x", "TARGET")
+    assert e.value.status_code == 403
+
+
+def test_wh_to_store_hq_admin_source_ok():
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    ot, *_ = _validate_authority(cur, _ctx("hq-admin"), "x", "SOURCE")
+    assert ot == "WH_TO_STORE"
+
+
+def test_wh_to_store_hq_admin_target_ok():
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    ot, *_ = _validate_authority(cur, _ctx("hq-admin"), "x", "TARGET")
+    assert ot == "WH_TO_STORE"
+
+
+def test_wh_to_store_side_final_400():
+    cur = _cur("WH_TO_STORE", 1, 3, {1: 1, 3: 1})
+    with pytest.raises(HTTPException) as e:
+        _validate_authority(cur, _ctx("hq-admin"), "x", "FINAL")
+    assert e.value.status_code == 400

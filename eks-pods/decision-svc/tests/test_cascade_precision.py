@@ -126,6 +126,35 @@ class _FakeCur:
         return self._rows.pop(0) if self._rows else None
 
 
+# ─── _stage0_source (Stage 0 · 2026-05-14 신규) ──────────────────────────
+# 자기 wh 본체 (location_type='WH') 의 effective_available ≥ qty 인 location.
+# 매장 보충 (target=STORE_OFFLINE) 시 Stage 1 (매장 ↔ 매장) 보다 우선.
+def test_stage0_source_returns_location_when_wh_body_has_surplus():
+    """wh 본체 surplus 충족 → location_id 반환"""
+    from src.routes.decision import _stage0_source
+    # 한 행: (location_id, effective_available)
+    cur = _FakeCur([(101, 80)])
+    result = _stage0_source(cur, isbn13="1234567890123", target_wh=1, qty=50)
+    assert result == 101
+
+
+def test_stage0_source_returns_none_when_no_wh_body_surplus():
+    """wh 본체 surplus 부족 → None (Stage 1 fallback)"""
+    from src.routes.decision import _stage0_source
+    cur = _FakeCur([])
+    assert _stage0_source(cur, isbn13="x", target_wh=1, qty=50) is None
+
+
+def test_stage0_source_passes_target_wh_isbn_qty():
+    """SQL params 로 target_wh, isbn13, qty 전달 — 자기 wh 본체만 + isbn 필터 + 최소량"""
+    from src.routes.decision import _stage0_source
+    cur = _FakeCur([])
+    _stage0_source(cur, isbn13="9876543210987", target_wh=2, qty=100)
+    assert "9876543210987" in cur.last_params
+    assert 2 in cur.last_params
+    assert 100 in cur.last_params
+
+
 def test_stage2_source_returns_enriched_dict_when_partner_found():
     """partner WH 가 surplus 충족 → location_id + partner_* 필드 dict 반환"""
     from src.routes.decision import _stage2_source

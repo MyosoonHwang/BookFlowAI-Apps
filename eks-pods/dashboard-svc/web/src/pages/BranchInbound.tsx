@@ -105,6 +105,14 @@ export default function BranchInbound() {
     return null;
   };
 
+  // WH_TO_STORE: branch-clerk 는 TARGET 만 (자기 매장 입고 동의).
+  // source 는 wh 본체 → branch 매장이 SOURCE 가 될 일은 없음.
+  const sideForOrderWhToStore = (o: { target_location_id: number | null }): 'TARGET' | null => {
+    if (my_store == null) return null;
+    if (o.target_location_id === my_store) return 'TARGET';
+    return null;
+  };
+
   // REBALANCE 양측 협의 — PENDING row 자기 측 (SOURCE 또는 TARGET) 승인.
   const approveMu = useMutation({
     mutationFn: ({ order_id, side }: { order_id: string; side: 'SOURCE' | 'TARGET' }) =>
@@ -119,6 +127,11 @@ export default function BranchInbound() {
         showToast({ type: 'warning', message: '내 측 처리 끝 · 상대 측 대기' });
       }
       qc.invalidateQueries({ queryKey: ['instr-all', role] });
+      qc.invalidateQueries({ queryKey: ['ov'] });
+      qc.invalidateQueries({ queryKey: ['branch-inv'] });
+      qc.invalidateQueries({ queryKey: ['plan-summary'] });
+      qc.invalidateQueries({ queryKey: ['plan-items'] });
+      qc.invalidateQueries({ queryKey: ['plan-items-delta'] });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
@@ -136,6 +149,11 @@ export default function BranchInbound() {
       setRejectTarget(null);
       setNote('');
       qc.invalidateQueries({ queryKey: ['instr-all', role] });
+      qc.invalidateQueries({ queryKey: ['ov'] });
+      qc.invalidateQueries({ queryKey: ['branch-inv'] });
+      qc.invalidateQueries({ queryKey: ['plan-summary'] });
+      qc.invalidateQueries({ queryKey: ['plan-items'] });
+      qc.invalidateQueries({ queryKey: ['plan-items-delta'] });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
@@ -157,6 +175,11 @@ export default function BranchInbound() {
       });
       showToast({ type: 'success', message: `✅ 실행 완료 · 매장 재고 +${r.qty ?? '?'}` });
       qc.invalidateQueries({ queryKey: ['instr-all', role] });
+      qc.invalidateQueries({ queryKey: ['ov'] });
+      qc.invalidateQueries({ queryKey: ['branch-inv'] });
+      qc.invalidateQueries({ queryKey: ['plan-summary'] });
+      qc.invalidateQueries({ queryKey: ['plan-items'] });
+      qc.invalidateQueries({ queryKey: ['plan-items-delta'] });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
@@ -174,6 +197,11 @@ export default function BranchInbound() {
       }
       setFeedback({ type: 'success', msg: `발송 완료 (${r.qty ?? '?'}권) · 운송 시작` });
       qc.invalidateQueries({ queryKey: ['instr-all', role] });
+      qc.invalidateQueries({ queryKey: ['ov'] });
+      qc.invalidateQueries({ queryKey: ['branch-inv'] });
+      qc.invalidateQueries({ queryKey: ['plan-summary'] });
+      qc.invalidateQueries({ queryKey: ['plan-items'] });
+      qc.invalidateQueries({ queryKey: ['plan-items-delta'] });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
@@ -273,6 +301,11 @@ export default function BranchInbound() {
                     msg: `일괄 수령 완료 · ${r.ok}/${r.total}${r.failed ? ` · 실패 ${r.failed}` : ''}`,
                   });
                   qc.invalidateQueries({ queryKey: ['instr-all', role] });
+      qc.invalidateQueries({ queryKey: ['ov'] });
+      qc.invalidateQueries({ queryKey: ['branch-inv'] });
+      qc.invalidateQueries({ queryKey: ['plan-summary'] });
+      qc.invalidateQueries({ queryKey: ['plan-items'] });
+      qc.invalidateQueries({ queryKey: ['plan-items-delta'] });
                 } catch (e) {
                   setFeedback({ type: 'error', msg: `일괄 수령 실패: ${String(e)}` });
                 }
@@ -371,6 +404,11 @@ export default function BranchInbound() {
                     msg: `일괄 발송 완료 · ${r.ok}/${r.total}${r.failed ? ` · 실패 ${r.failed}` : ''}`,
                   });
                   qc.invalidateQueries({ queryKey: ['instr-all', role] });
+      qc.invalidateQueries({ queryKey: ['ov'] });
+      qc.invalidateQueries({ queryKey: ['branch-inv'] });
+      qc.invalidateQueries({ queryKey: ['plan-summary'] });
+      qc.invalidateQueries({ queryKey: ['plan-items'] });
+      qc.invalidateQueries({ queryKey: ['plan-items-delta'] });
                 } catch (e) {
                   setFeedback({ type: 'error', msg: `일괄 발송 실패: ${String(e)}` });
                 }
@@ -452,16 +490,23 @@ export default function BranchInbound() {
         <div className="card">
           <h2 className="h2">🕒 승인 대기 중 ({myPending.length})</h2>
           <p className="text-xs text-bf-muted mb-2">
-            REBALANCE 는 양측 (출고 매장 + 입고 매장) 모두 승인해야 운송이 시작됩니다.
+            REBALANCE 와 WH_TO_STORE (물류센터 → 매장 보충) 는 양측 모두 승인해야 운송이 시작됩니다.
             아래 행에서 자기 측을 승인하면 상대 측 대기 상태로 전환되고, 양측 모두 승인되면 위 "입고 대기" 로 자동 이동합니다.
           </p>
           <table className="data-table">
             <thead><tr><th>유형</th><th>긴급도</th><th>ISBN</th><th>제목</th><th>출발 → 도착</th><th>상태</th><th>수량</th><th>처리</th></tr></thead>
             <tbody>
               {myPending.map((o) => {
-                const side = o.order_type === 'REBALANCE' ? sideForOrderRebalance(o) : null;
+                // WH_TO_STORE: branch-clerk 는 TARGET 만, REBALANCE: 양측
+                const side: 'SOURCE' | 'TARGET' | null = o.order_type === 'REBALANCE'
+                  ? sideForOrderRebalance(o)
+                  : o.order_type === 'WH_TO_STORE'
+                    ? sideForOrderWhToStore(o)
+                    : null;
                 const done = selfDone.has(o.order_id);
                 const isRebalance = o.order_type === 'REBALANCE';
+                const isWhToStore = o.order_type === 'WH_TO_STORE';
+                const isBothSides = isRebalance || isWhToStore;
                 const sideLabel = side === 'SOURCE' ? '출고 동의' : side === 'TARGET' ? '입고 동의' : null;
                 return (
                   <tr key={o.order_id}>
@@ -470,7 +515,7 @@ export default function BranchInbound() {
                     <td className="font-mono text-[11px]">{o.isbn13}</td>
                     <td>{o.title ?? '-'}</td>
                     <td className="text-[11px]">
-                      {isRebalance && o.source_location_id != null && o.target_location_id != null ? (
+                      {isBothSides && o.source_location_id != null && o.target_location_id != null ? (
                         <SideProgress
                           source={{ name: nameOf(o.source_location_id), done: side === 'SOURCE' && done }}
                           target={{ name: nameOf(o.target_location_id), done: side === 'TARGET' && done }}
@@ -495,7 +540,7 @@ export default function BranchInbound() {
                     <td>
                       {o.status === 'AUTO_EXECUTED' ? (
                         <span className="pill-pending">자동 실행됨</span>
-                      ) : isRebalance && side && !done ? (
+                      ) : isBothSides && side && !done ? (
                         <button
                           className="btn-primary btn-sm"
                           disabled={approveMu.isPending}
@@ -504,7 +549,7 @@ export default function BranchInbound() {
                         >
                           ✓ 내 측 ({side}) {sideLabel}
                         </button>
-                      ) : isRebalance && side && done ? (
+                      ) : isBothSides && side && done ? (
                         <span className="text-[11px] text-bf-success font-medium">✓ 내 측 처리 끝 · 상대 측 대기</span>
                       ) : (
                         <span className="pill-pending">승인 대기</span>

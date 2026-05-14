@@ -9,6 +9,7 @@ import Books from './pages/Books';
 import Inventory from './pages/Inventory';
 import Decision from './pages/Decision';
 import FinalPlan from './pages/FinalPlan';
+import ExecutionByLocation from './pages/ExecutionByLocation';
 import Approval from './pages/Approval';
 import Returns from './pages/Returns';
 import Requests from './pages/Requests';
@@ -72,6 +73,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/books"      element={<Books />} />
             <Route path="/decision"   element={<Decision />} />
             <Route path="/final-plan" element={<FinalPlan />} />
+            <Route path="/execution"  element={<ExecutionByLocation />} />
             <Route path="/approval"   element={<Approval />} />
             <Route path="/returns"    element={<Returns />} />
             <Route path="/requests"   element={<Requests />} />

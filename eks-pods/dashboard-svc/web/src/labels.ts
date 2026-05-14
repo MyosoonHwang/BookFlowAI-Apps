@@ -2,9 +2,10 @@
 // 기술 식별자는 그대로 두되, UI 노출 텍스트는 모두 이 파일을 거치게 한다.
 
 export const ORDER_TYPE_KO: Record<string, string> = {
-  REBALANCE:       '지점 재분배',
-  WH_TRANSFER:     '권역 이동',
-  PUBLISHER_ORDER: '출판사 발주',
+  WH_TO_STORE:     '🏬 매장 보충',
+  REBALANCE:       '🔄 매장 간 재분배',
+  WH_TRANSFER:     '🚛 권역 간 이동',
+  PUBLISHER_ORDER: '📦 외부 발주',
 };
 
 export const ORDER_STATUS_KO: Record<string, string> = {

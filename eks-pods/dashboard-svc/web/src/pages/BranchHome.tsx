@@ -75,6 +75,58 @@ export default function BranchHome() {
     (o) => o.target_location_id === storeId && o.status === 'APPROVED',
   ).slice(0, 10);
 
+  // 4-stage cascade 정합 (2026-05-14 Stage 0 WH_TO_STORE 추가).
+  // 우리 매장 협의 중 = PENDING + (WH_TO_STORE TARGET || REBALANCE SOURCE/TARGET)
+  const myPendingNegotiating = items.filter((o) => {
+    if (o.status !== 'PENDING') return false;
+    if (o.order_type === 'WH_TO_STORE') return o.target_location_id === storeId;
+    if (o.order_type === 'REBALANCE')
+      return o.source_location_id === storeId || o.target_location_id === storeId;
+    return false;
+  });
+  // 입고 대기 (양측 ✓ APPROVED) = 우리 매장 TARGET + APPROVED
+  const myApprovedInbound = items.filter(
+    (o) => o.target_location_id === storeId && o.status === 'APPROVED',
+  );
+
+  // 도착 예정일 별 group (forecast_rationale.expected_arrival_date · decision-svc LEAD_DAYS 결과)
+  // PENDING (협의 중) + APPROVED (운송 중) 둘 다 묶음 → 매장 직원이 언제 무엇이 도착할지 한눈에.
+  const myUpcomingInbound = items.filter(
+    (o) =>
+      o.target_location_id === storeId &&
+      (o.status === 'PENDING' || o.status === 'APPROVED'),
+  );
+  type ArrivalBucket = { date: string; count: number; orders: typeof items };
+  const arrivalBuckets: ArrivalBucket[] = (() => {
+    const m = new Map<string, ArrivalBucket>();
+    for (const o of myUpcomingInbound) {
+      const r = (o.forecast_rationale ?? {}) as Record<string, unknown>;
+      const d = typeof r.expected_arrival_date === 'string' ? r.expected_arrival_date : null;
+      if (!d) continue;
+      if (!m.has(d)) m.set(d, { date: d, count: 0, orders: [] });
+      const b = m.get(d)!;
+      b.count += 1;
+      b.orders.push(o);
+    }
+    return [...m.values()].sort((a, b) => a.date.localeCompare(b.date));
+  })();
+  // D+N 라벨 (오늘 대비 일 수 차이)
+  const arrivalLabel = (iso: string): string => {
+    const t = new Date(today + 'T00:00:00');
+    const d = new Date(iso + 'T00:00:00');
+    const diff = Math.round((d.getTime() - t.getTime()) / (24 * 3600 * 1000));
+    if (diff <= 0) return '오늘';
+    if (diff === 1) return '내일 (D+1)';
+    if (diff === 2) return '모레 (D+2)';
+    return `${diff}일 후 (D+${diff})`;
+  };
+  // 오늘 처리 완료 EXECUTED
+  const myExecutedToday = items.filter(
+    (o) =>
+      (o.target_location_id === storeId || o.source_location_id === storeId) &&
+      (o.status === 'EXECUTED' || o.status === 'AUTO_EXECUTED'),
+  );
+
   // 매장 부족 도서 (가용 ≤ 안전재고)
   const invItems = (inv.data?.items ?? []) as any[];
   const lowStockAll = invItems
@@ -99,6 +151,27 @@ export default function BranchHome() {
         <p className="text-bf-muted text-xs mt-1">
           오늘 매장에서 처리할 액션을 한 화면으로. 매출 차트는 매장 매출 상세 페이지에서 확인하세요.
         </p>
+      </div>
+
+      {/* 0행: 매장 4-stage cascade 처리 현황 (PENDING / APPROVED / EXECUTED) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Link to="/branch-inbound" className="metric-card hover:border-bf-primary transition border-bf-warn">
+          <div className="metric-label">📋 우리 매장 협의 중</div>
+          <div className="metric-value text-bf-warn">{myPendingNegotiating.length}건</div>
+          <div className="text-[11px] text-bf-muted mt-1">
+            🏬 매장 보충 (WH→Store) / 🔄 매장 간 재분배 (양측 협의)
+          </div>
+        </Link>
+        <Link to="/branch-inbound" className="metric-card hover:border-bf-primary transition border-bf-primary">
+          <div className="metric-label">📦 입고 대기 (양측 ✓)</div>
+          <div className="metric-value text-bf-primary">{myApprovedInbound.length}건</div>
+          <div className="text-[11px] text-bf-muted mt-1">출고 측 발송 완료 · 도착 확인 대기</div>
+        </Link>
+        <Link to="/execution" className="metric-card hover:border-bf-primary transition border-bf-success">
+          <div className="metric-label">✅ 오늘 처리 완료</div>
+          <div className="metric-value text-bf-success">{myExecutedToday.length}건</div>
+          <div className="text-[11px] text-bf-muted mt-1">EXECUTED · 위치별 추적 →</div>
+        </Link>
       </div>
 
       {/* 1행: 오늘 처리 현황 (3 카드 · 색상 강화) */}
@@ -176,6 +249,51 @@ export default function BranchHome() {
           </table>
         )}
       </div>
+
+      {/* 3.5행: 📥 받을 거 — 도착 예정일 별 group (stage 별 lead time 반영) */}
+      {arrivalBuckets.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="h2 text-sm">📥 받을 거 — 도착 예정일별</h2>
+            <span className="text-[10px] text-bf-muted">
+              D+1 매장 보충/재분배 · D+2 권역간 · D+4 외부 발주
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {arrivalBuckets.map((b) => {
+              const types = new Set(b.orders.map((o) => o.order_type));
+              const typeLabel = [...types]
+                .map((t) =>
+                  t === 'WH_TO_STORE'    ? '🏬 매장보충' :
+                  t === 'REBALANCE'      ? '🔄 재분배' :
+                  t === 'WH_TRANSFER'    ? '🚛 권역간' :
+                  t === 'PUBLISHER_ORDER'? '📦 외부발주' : t,
+                ).join(' · ');
+              return (
+                <li
+                  key={b.date}
+                  className="flex items-center justify-between p-2 rounded border border-bf-border2 bg-bf-panel2"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-bf-primary">{arrivalLabel(b.date)}</span>
+                    <span className="text-[10px] text-bf-muted">{b.date}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-bf-muted">{typeLabel}</span>
+                    <Link
+                      to="/branch-inbound"
+                      className="font-bold text-bf-primary hover:underline"
+                      title={`${b.count}건 도착 예정`}
+                    >
+                      {b.count}건 →
+                    </Link>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* 4행: 부족 도서 alert top 5 */}
       <div className="card">
