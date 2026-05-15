@@ -64,6 +64,8 @@ export default function Approval() {
   const [qIsbn, setQIsbn] = useState('');
   const [qTitle, setQTitle] = useState('');
   const [qStore, setQStore] = useState('');
+  // 지점 재분배 sub-tab — 입고 (target=내 매장) / 출고 (source=내 매장) 분류
+  const [rebalanceSide, setRebalanceSide] = useState<'all' | 'inbound' | 'outbound'>('all');
   const [page, setPage] = useState(0);
   const [selfDone, setSelfDone] = useState<Set<string>>(new Set());
   const [editTarget, setEditTarget] = useState<{
@@ -120,9 +122,15 @@ export default function Approval() {
         const tgtName = (nameOf(o.target_location_id ?? undefined) ?? '').toLowerCase();
         if (!srcName.includes(trimmedStore) && !tgtName.includes(trimmedStore)) return false;
       }
+      // REBALANCE sub-tab — 입고 (target=내 측) / 출고 (source=내 측) 분류
+      if (stage === 'REBALANCE' && rebalanceSide !== 'all') {
+        const side = whichSide(o, scope);
+        if (rebalanceSide === 'inbound' && !(side === 'TARGET' || side === 'BOTH')) return false;
+        if (rebalanceSide === 'outbound' && !(side === 'SOURCE' || side === 'BOTH')) return false;
+      }
       return true;
     });
-  }, [queryRes.data, qIsbn, qTitle, qStore, nameOf]);
+  }, [queryRes.data, qIsbn, qTitle, qStore, nameOf, stage, rebalanceSide, scope]);
   const totalPending = queryRes.data?.total ?? 0;
   const totalAll = fullStats?.total ?? 0;  // 전체 (stage filter 무시)
 
@@ -295,6 +303,19 @@ export default function Approval() {
             );
           })}
         </div>
+        {/* 재분배 sub-tab — 입고/출고 분류 (REBALANCE 탭에서만 노출) */}
+        {stage === 'REBALANCE' && (
+          <div className="flex gap-1 flex-wrap pt-1 border-t border-bf-border">
+            {(['all', 'inbound', 'outbound'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setRebalanceSide(k)}
+                className={`px-3 py-1 text-xs rounded ${rebalanceSide === k ? 'bg-bf-primary text-white' : 'bg-bf-surface text-bf-muted hover:text-bf-text'}`}
+              >{k === 'all' ? '전체' : k === 'inbound' ? '📥 내 측 입고' : '📤 내 측 출고'}</button>
+            ))}
+          </div>
+        )}
         {/* 검색박스 3개 분리 (ISBN · 제목 · 매장) — client-side filter */}
         <div className="grid grid-cols-3 gap-2">
           <input
