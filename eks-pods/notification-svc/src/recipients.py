@@ -56,8 +56,13 @@ def get_recipients(event_type: str, payload: dict | None = None) -> list[dict]:
         "StockDepartPending":  _hq() + _wh(),
         "StockArrivalPending": _hq() + _wh(),
 
-        # 2번: 전 레벨 — 본사+경영진+물류센터+지점
+        # 전 레벨 — 본사+경영진+물류센터+지점
+        "ForecastCompleted":   _hq() + _wh() + _branches(),
         "DailyPlanFinalized":  _hq() + _wh() + _branches(),
+        "DeliveryCompleted":   _hq() + _wh() + _branches(),
+
+        # 본사 + 물류센터
+        "NegotiationDelay":    _hq() + _wh(),
 
         # 이메일 불필요 (Redis/웹소켓 전용)
         "OrderPending":  [],
