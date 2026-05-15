@@ -201,6 +201,49 @@ export default function CalendarDetail() {
         <div className="divide-y divide-bf-border">
           {items.length === 0 ? (
             <div className="p-6 text-center text-sm text-bf-muted">해당 날짜에 항목이 없습니다.</div>
+          ) : tab === 'executed' ? (
+            /* v5: 완료 탭 order_type × 도서별 그룹핑 (Logistics 와 동일) */
+            (() => {
+              const groups: Record<string, PendingOrder[]> = {};
+              for (const o of items) { (groups[o.order_type] = groups[o.order_type] || []).push(o); }
+              const order: string[] = ['REBALANCE', 'WH_TO_STORE', 'WH_TRANSFER', 'PUBLISHER_ORDER'];
+              return order.filter((k) => groups[k]?.length).map((k) => {
+                const byBook: Record<string, PendingOrder[]> = {};
+                for (const o of groups[k]) {
+                  const key = `${o.isbn13}|${o.title ?? ''}`;
+                  (byBook[key] = byBook[key] || []).push(o);
+                }
+                const books = Object.entries(byBook).sort((a, b) => b[1].length - a[1].length);
+                return (
+                  <div key={k}>
+                    <div className="px-3 py-2 text-sm font-medium bg-bf-surface/50">
+                      {ORDER_TYPE_KO[k] ?? k} ({groups[k].length}) · {books.length} 도서
+                    </div>
+                    <div className="divide-y divide-bf-border">
+                      {books.map(([bk, list]) => {
+                        const [isbn, title] = bk.split('|');
+                        const totalQty = list.reduce((s, o) => s + o.qty, 0);
+                        return (
+                          <div key={bk} className="px-3 py-2">
+                            <div className="text-sm font-medium truncate">
+                              {title || `ISBN ${isbn}`} <span className="text-xs text-bf-muted">· ISBN {isbn} · 총 {totalQty}권 · {list.length}건</span>
+                            </div>
+                            <div className="mt-1 space-y-0.5">
+                              {list.map((o) => (
+                                <div key={o.order_id} className="text-xs text-bf-muted flex items-center gap-2">
+                                  <span>{nameOf(o.source_location_id ?? undefined) ?? '외부'} → {nameOf(o.target_location_id) ?? '?'} · {o.qty}권</span>
+                                  <span className="px-1.5 py-0.5 rounded bg-bf-surface border border-bf-border">{ORDER_STATUS_KO[o.status] ?? o.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              });
+            })()
           ) : (
             items.map((o) => {
               const { side } = classify(o, role, scope);

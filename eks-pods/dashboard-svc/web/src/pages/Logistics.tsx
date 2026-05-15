@@ -293,6 +293,16 @@ export default function Logistics() {
                       <span className="ml-2 px-1.5 py-0.5 rounded bg-bf-surface border border-bf-border">
                         {ORDER_STATUS_KO[o.status] ?? o.status}
                       </span>
+                      {/* v5: side 별 시점 다름 — source 발송 / target 도착 */}
+                      {(() => {
+                        const eaa = (o as PendingOrder & { expected_arrival_at?: string | null }).expected_arrival_at;
+                        const dispAt = (o as PendingOrder & { dispatched_at?: string | null }).dispatched_at;
+                        const dispDate = dispAt ? new Date(dispAt).toISOString().slice(0,10) : null;
+                        if (side === 'source') return <span className="ml-2">📤 출고 {dispDate ?? '예정'}</span>;
+                        if (side === 'target') return <span className="ml-2">📥 도착 {eaa ?? '?'}</span>;
+                        if (side === 'both' && eaa) return <span className="ml-2">📦 {eaa}</span>;
+                        return null;
+                      })()}
                     </div>
                   </div>
                   <div className="flex-shrink-0">

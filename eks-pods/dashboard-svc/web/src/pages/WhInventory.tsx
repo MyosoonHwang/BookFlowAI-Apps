@@ -25,26 +25,58 @@ import KpiPie from '../components/charts/KpiPie';
 export default function WhInventory() {
   const { role } = useOutletContext<{ role: Role }>();
   const { byId, items: locItems } = useLocations(role);
-  const { scope_wh_id } = useScope();
+  const { scope_wh_id, scope_store_id } = useScope();
 
-  // 2026-05-13 role 기반 WH selector — hq-admin: 두 권역 선택 가능 · wh-manager: 자기 권역만
+  // 2026-05-13 role 기반 WH selector — hq-admin: 두 권역 선택 · wh-manager: 자기 권역만 · branch-clerk: 자기 매장 wh 자동
   const isHq = role === 'hq-admin';
   const isWhMgr = role === 'wh-manager-1' || role === 'wh-manager-2';
+  const isBranchClerk = role === 'branch-clerk';
+
+  // branch-clerk: 자기 매장의 wh_id 자동 derive
+  const branchWhId = useMemo(() => {
+    if (!isBranchClerk || scope_store_id == null) return null;
+    const myStore = locItems.find((l: any) => l.location_id === scope_store_id);
+    return (myStore as any)?.wh_id ?? null;
+  }, [isBranchClerk, scope_store_id, locItems]);
+
   const accessibleWhs = useMemo(() => {
     const whs = locItems.filter((l: any) => l.location_type === 'WH');
     if (isHq) return whs;
     if (isWhMgr && scope_wh_id != null) return whs.filter((l: any) => l.wh_id === scope_wh_id);
+    if (isBranchClerk && branchWhId != null) return whs.filter((l: any) => l.wh_id === branchWhId);
     return [];
-  }, [isHq, isWhMgr, locItems, scope_wh_id]);
+  }, [isHq, isWhMgr, isBranchClerk, branchWhId, locItems, scope_wh_id]);
 
   const [selectedWhId, setSelectedWhId] = useState<number | null>(null);
   const fallbackWhId = role === 'wh-manager-2' ? 2 : 1;
   const wh_id =
-    selectedWhId ?? scope_wh_id ?? accessibleWhs[0]?.wh_id ?? fallbackWhId;
+    selectedWhId ?? scope_wh_id ?? branchWhId ?? accessibleWhs[0]?.wh_id ?? fallbackWhId;
 
   // 내 거점창고 location (각 wh 당 1개) — locations 의 wh_id × type=WH
   const whLoc = useMemo(() => locItems.find((l) => l.wh_id === wh_id && l.location_type === 'WH'), [locItems, wh_id]);
   const whLocId = whLoc?.location_id;
+
+  // v5 2026-05-15: 매장 view 분기
+  // - URL ?view=stores → 권역 매장 selector + 매장 inventory
+  // - branch-clerk → 자기 매장 자동 (selectedLocId 고정)
+  // - default (wh body) → 거점창고 본체 inventory
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialViewMode: 'wh' | 'stores' = urlParams.get('view') === 'stores' ? 'stores' : 'wh';
+  const [viewMode, setViewMode] = useState<'wh' | 'stores'>(isBranchClerk ? 'stores' : initialViewMode);
+
+  // 권역 내 매장 (location_type !== 'WH' && wh_id 일치)
+  const storeLocsInScope = useMemo(() => {
+    if (!wh_id) return [];
+    return locItems.filter((l: any) => l.wh_id === wh_id && l.location_type !== 'WH' && !l.is_virtual);
+  }, [locItems, wh_id]);
+
+  const [selectedStoreLocId, setSelectedStoreLocId] = useState<number | null>(null);
+  // 실제 표시할 location_id
+  const effectiveLocId =
+    viewMode === 'stores'
+      ? (isBranchClerk ? scope_store_id : (selectedStoreLocId ?? storeLocsInScope[0]?.location_id ?? whLocId))
+      : whLocId;
+  const effectiveLoc = useMemo(() => locItems.find((l) => l.location_id === effectiveLocId), [locItems, effectiveLocId]);
 
   // overview: queryKey 통일 — WhDashboard/BranchInventory/KPI 공유. 30 초 (재고 셀 변동 Redis 실시간)
   const ov = useQuery({
@@ -92,11 +124,11 @@ export default function WhInventory() {
   const [page, setPage] = useState(1);
   useEffect(() => setPage(1), [search, sortKey]);
 
-  // 거점창고 inventory row 만 (location_id === whLocId)
+  // v5: effectiveLocId 의 inventory (wh body 또는 권역 매장 1개 또는 branch 자기 매장)
   const raw = useMemo(() => {
     const items = ov.data?.inventory?.items ?? [];
-    return items.filter((it: any) => it.location_id === whLocId);
-  }, [ov.data, whLocId]);
+    return items.filter((it: any) => it.location_id === effectiveLocId);
+  }, [ov.data, effectiveLocId]);
 
   const sorted = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -159,25 +191,57 @@ export default function WhInventory() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">{whLoc?.name ?? `WH-${wh_id}`} · 거점창고 재고</h1>
+        <h1 className="h1">{effectiveLoc?.name ?? whLoc?.name ?? `WH-${wh_id}`} · 재고</h1>
         <p className="text-bf-muted text-xs mt-1">
-          자기 권역 거점창고의 도서 1,000종 재고를 실시간으로 봅니다. 온라인 매장 주문도 이 창고에서 출하 (Notion 1.1).
-          관할 지점으로의 권역 내 재분배·외부 발주 의사결정에 활용.
+          {viewMode === 'wh'
+            ? '거점창고 1,000종 재고 실시간. 온라인 주문도 이 창고에서 출하 (Notion 1.1). 권역 재분배·외부 발주 의사결정에 활용.'
+            : '권역 지점별 재고 (selector 로 매장 전환).'}
         </p>
-        {isHq && accessibleWhs.length > 1 && (
-          <div className="flex items-center gap-2 mt-2 p-2 rounded-lg bg-bf-panel/60 border border-bf-border/40">
-            <span className="text-xs text-bf-muted">🔧 본사 모드 · 보는 권역:</span>
-            <select
-              className="ipt text-sm px-2 py-1 rounded bg-bf-panel border border-bf-border"
-              value={wh_id}
-              onChange={(e) => setSelectedWhId(parseInt(e.target.value, 10))}
-            >
-              {accessibleWhs.map((l: any) => (
-                <option key={l.wh_id} value={l.wh_id}>{l.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
+        {/* v5: wh/매장 view 토글 + 매장 selector + (hq) 권역 selector */}
+        <div className="flex items-center gap-2 mt-2 p-2 rounded-lg bg-bf-panel/60 border border-bf-border/40 flex-wrap">
+          {!isBranchClerk && (
+            <>
+              <button
+                type="button"
+                onClick={() => setViewMode('wh')}
+                className={`px-3 py-1 text-xs rounded ${viewMode === 'wh' ? 'bg-bf-primary text-white' : 'bg-bf-surface text-bf-muted hover:text-bf-text'}`}
+              >🏢 거점창고</button>
+              <button
+                type="button"
+                onClick={() => setViewMode('stores')}
+                className={`px-3 py-1 text-xs rounded ${viewMode === 'stores' ? 'bg-bf-primary text-white' : 'bg-bf-surface text-bf-muted hover:text-bf-text'}`}
+              >🏪 권역 지점별</button>
+            </>
+          )}
+          {isHq && accessibleWhs.length > 1 && (
+            <>
+              <span className="text-xs text-bf-muted ml-2">권역:</span>
+              <select
+                className="ipt text-sm px-2 py-1 rounded bg-bf-panel border border-bf-border"
+                value={wh_id}
+                onChange={(e) => setSelectedWhId(parseInt(e.target.value, 10))}
+              >
+                {accessibleWhs.map((l: any) => (
+                  <option key={l.wh_id} value={l.wh_id}>{l.name}</option>
+                ))}
+              </select>
+            </>
+          )}
+          {viewMode === 'stores' && !isBranchClerk && storeLocsInScope.length > 0 && (
+            <>
+              <span className="text-xs text-bf-muted ml-2">매장:</span>
+              <select
+                className="ipt text-sm px-2 py-1 rounded bg-bf-panel border border-bf-border"
+                value={selectedStoreLocId ?? storeLocsInScope[0]?.location_id ?? ''}
+                onChange={(e) => setSelectedStoreLocId(parseInt(e.target.value, 10))}
+              >
+                {storeLocsInScope.map((l: any) => (
+                  <option key={l.location_id} value={l.location_id}>{l.name}</option>
+                ))}
+              </select>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
