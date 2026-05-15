@@ -1529,12 +1529,15 @@ def approve_new_book_request(
                     )
                 target_loc = loc[0]
                 order_id = uuid4()
+                # v5 2026-05-15 사용자 결정: PUBLISHER 신간 = 별도 협의 X · 즉시 APPROVED.
+                # expected_arrival_at = NOW + 3 days (PUBLISHER LEAD_DAYS).
                 cur.execute(
                     """
                     INSERT INTO pending_orders
                         (order_id, order_type, isbn13, source_location_id, target_location_id,
-                         qty, urgency_level, status, approved_at)
-                    VALUES (%s, 'PUBLISHER_ORDER', %s, NULL, %s, %s, 'NEWBOOK', 'APPROVED', NOW())
+                         qty, urgency_level, status, approved_at, expected_arrival_at)
+                    VALUES (%s, 'PUBLISHER_ORDER', %s, NULL, %s, %s, 'NEWBOOK', 'APPROVED', NOW(),
+                            (CURRENT_DATE + INTERVAL '3 days')::date)
                     """,
                     (str(order_id), isbn13, target_loc, qty),
                 )

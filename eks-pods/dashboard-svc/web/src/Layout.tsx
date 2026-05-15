@@ -24,7 +24,9 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: '/plan',        label: '🎬 시연 발의',        desc: 'D+1 cascade 자동 발의 + 단건 발주',         allow: 'HQ' },
       { to: '/kpi',         label: '실시간 KPI',         desc: '전사 매출·거래량 한눈에',                allow: 'HQ' },
-      { to: '/inventory',   label: '전사 재고',           desc: '모든 매장 재고와 부족 알림',              allow: 'HQ' },
+      { to: '/inventory',   label: '전사 재고 (분석)',     desc: '전사 KPI · 이상 감지 · AnomalyBanner',              allow: 'HQ' },
+      { to: '/wh-inventory',              label: '🏬 물류센터별 재고', desc: '권역 selector · 거점창고 도서 단위',     allow: 'HQ' },
+      { to: '/wh-inventory?view=stores',  label: '🏪 지점별 재고',     desc: '권역 + 지점 selector · 매장 도서 단위',     allow: 'HQ' },
       { to: '/returns',     label: '반품 처리',           desc: '매장이 신청한 반품 승인 / 거부',           allow: 'HQ' },
       { to: '/requests',    label: '신간 편입 결정',      desc: '출판사 신간을 우리 매장에 들일지 결정',    allow: 'HQ' },
     ],
@@ -33,13 +35,14 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: '🏬 물류센터 (자기 권역)',
     items: [
       { to: '/wh-inventory',    label: '내 거점창고 재고',  desc: '거점창고 1,000 SKU 책 단위 실시간', allow: 'WH' },
+      { to: '/wh-inventory?view=stores', label: '권역 지점별 재고', desc: '내 권역 지점 6곳 재고 selector', allow: 'WH' },
       // 처리 (협의 · 출고/입고) 는 위 /approval + /logistics 사이드바 진입점 사용
     ],
   },
   {
     section: '🏪 매장 (자기 매장)',
     items: [
-      { to: '/inventory',        label: '매장 재고',         desc: '내 매장 도서 재고와 부족 알림 (scope 자동)', allow: 'BRANCH' },
+      { to: '/wh-inventory',     label: '매장 재고',         desc: '내 매장 도서 재고와 부족 알림 (물류센터와 동일 layout)', allow: 'BRANCH' },
       { to: '/branch-sales',     label: '매장 매출',         desc: '내 매장 실시간 판매 (POS)',              allow: 'BRANCH' },
       // 처리 (협의 · 입고) 는 위 /approval + /logistics 진입점 사용. SNS 매칭은 /spikes 의 내 매장 탭.
     ],

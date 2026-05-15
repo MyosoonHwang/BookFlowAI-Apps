@@ -392,6 +392,22 @@ export default function Approval() {
                   )}
                   <div className="text-xs text-bf-muted mt-1 truncate">
                     ISBN {o.isbn13} · 수량 {o.qty}권 · {nameOf(o.source_location_id ?? undefined) ?? '외부'} → {nameOf(o.target_location_id ?? undefined) ?? '?'}
+                    {/* v5: side 별 시점 다름 (보내는/받는) + chained downstream plan summary */}
+                    {(() => {
+                      const eaa = (o as PendingOrder & { expected_arrival_at?: string | null }).expected_arrival_at;
+                      const sideLabel = side === 'SOURCE'
+                        ? '📤 보내는 시점: 발의 당일'
+                        : side === 'TARGET'
+                          ? `📥 받는 시점: ${eaa ?? '?'}`
+                          : eaa ? `📦 도착 예정: ${eaa}` : '';
+                      const downstream =
+                        o.order_type === 'WH_TRANSFER' || o.order_type === 'PUBLISHER_ORDER'
+                          ? ` · 🔗 도착 후 권역 매장 6곳 분배 (자동 chained WH_TO_STORE)`
+                          : '';
+                      return (sideLabel || downstream) ? (
+                        <span className="ml-2">{sideLabel}{downstream}</span>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
                 <div className="flex-shrink-0 flex items-center gap-2">
