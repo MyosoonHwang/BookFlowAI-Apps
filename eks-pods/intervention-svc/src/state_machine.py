@@ -229,15 +229,16 @@ def _trigger_chained_wh_to_store(cur, parent_id: str, wh_loc: int, isbn: str, qt
                  est_lead_time_hours, est_cost, urgency_level, auto_execute_eligible,
                  status, created_at, approved_at, expected_arrival_at,
                  forecast_rationale)
-            VALUES (gen_random_uuid(), 'WH_TO_STORE', %s, %s, %s, %s,
-                    6, %s * 500, 'NORMAL', false,
+            VALUES (gen_random_uuid(), 'WH_TO_STORE', %s::varchar, %s::int, %s::int, %s::int,
+                    6, %s::int * 500, 'NORMAL', false,
                     'APPROVED', NOW(), NOW(), (NOW() + INTERVAL '1 day')::date,
-                    jsonb_build_object('reason', 'chained_from_wh_arrival', 'parent_order_id', %s,
+                    jsonb_build_object('reason', 'chained_from_wh_arrival', 'parent_order_id', %s::text,
                                        'expected_arrival_date', (NOW() + INTERVAL '1 day')::date::text,
                                        'auto_approved', true))
             RETURNING order_id
             """,
             (isbn, wh_loc, target_store, allocate_qty, allocate_qty, parent_id),
+            prepare=False,
         )
         chained = cur.fetchone()
         if chained:
