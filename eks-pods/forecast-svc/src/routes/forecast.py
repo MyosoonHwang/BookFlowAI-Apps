@@ -205,3 +205,108 @@ def refresh(req: RefreshRequest, ctx: AuthContext = Depends(require_auth)):
         store_id=req.store_id,
         inserted=len(req.items),
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 신간 편입 결정용 — VertexAI 수요예측 호출 (2026-05-15 사용자 결정)
+#
+# 흐름:
+#   1) 출판사 신청 (new_book_requests PENDING) →
+#   2) 본사가 이 endpoint 호출 → VertexAI Pipeline 으로 매장별/wh별 수요예측 받음 →
+#   3) 결과를 보고 본사가 가치 판단 후 편입 결정 (/intervention/new-book-requests/{id}/approve)
+#
+# TODO(GCP 연결 후): vertex AI Endpoint POST 호출로 교체.
+#   - GCP_VERTEX_ENDPOINT env var
+#   - 입력 instance: {isbn13, publisher_id, category, price, dimensions...}
+#   - 출력 predictions: per (location_id) → {predicted_demand_7d, predicted_demand_30d, confidence}
+# 현재는 책 메타데이터 기반 mock — 매장 12 + wh 2 (총 14 location).
+# ──────────────────────────────────────────────────────────────────────────────
+import random as _rnd
+from pydantic import BaseModel
+
+class NewBookPredictReq(BaseModel):
+    isbn13: str
+    publisher_id: int | None = None
+    category: str | None = None
+    expected_price: int | None = None
+
+class NewBookLocationPred(BaseModel):
+    location_id: int
+    location_name: str
+    location_type: str  # 'STORE_OFFLINE' | 'STORE_ONLINE' | 'WH'
+    wh_id: int | None
+    predicted_demand_7d: float
+    predicted_demand_30d: float
+    confidence: float  # 0.0~1.0
+
+class NewBookPredictResp(BaseModel):
+    isbn13: str
+    model_version: str
+    predicted_at: str
+    predictions: list[NewBookLocationPred]
+    total_7d: float
+    total_30d: float
+    recommendation: str  # 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'PASS'
+
+
+@router.post("/newbook/predict-demand", response_model=NewBookPredictResp)
+def newbook_predict_demand(req: NewBookPredictReq, ctx: AuthContext = Depends(require_auth)):
+    """신간 편입 결정용 매장별/wh별 7d/30d 수요예측. hq-admin only.
+
+    GCP 연결 후 Vertex AI Pipeline 호출로 교체될 stub.
+    현재 mock 데이터 — 책 메타데이터 (publisher_id 인기도 ranking + category) 기반 분포.
+    """
+    if ctx.role != "hq-admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="hq-admin only (신간 편입 결정 권한)")
+
+    # 모든 매장 + wh location list (DB 조회)
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT location_id, name, location_type, wh_id "
+            "FROM locations WHERE active = TRUE AND COALESCE(is_virtual, FALSE) = FALSE "
+            "ORDER BY location_type, location_id"
+        )
+        loc_rows = cur.fetchall()
+
+    # Mock 분포 — 출판사 id 기반 base demand (실제 GCP 응답 모방)
+    base_demand = 30 + (req.publisher_id or 1) % 50  # 30~80 per store / 7d
+    rng = _rnd.Random(hash(req.isbn13) & 0xFFFFFFFF)
+    predictions: list[NewBookLocationPred] = []
+    for lid, name, ltype, wh_id in loc_rows:
+        if ltype == "WH":
+            # WH = 자기 권역 매장 합산 base × 6 매장
+            d7 = base_demand * 6 * rng.uniform(0.7, 1.3)
+        elif ltype == "STORE_ONLINE":
+            d7 = base_demand * rng.uniform(1.5, 2.5)  # 온라인 보통 더 많음
+        else:
+            d7 = base_demand * rng.uniform(0.6, 1.4)
+        d30 = d7 * 4.2  # 4주 × 약간 누적 효과
+        predictions.append(NewBookLocationPred(
+            location_id=lid,
+            location_name=name,
+            location_type=ltype,
+            wh_id=wh_id,
+            predicted_demand_7d=round(d7, 1),
+            predicted_demand_30d=round(d30, 1),
+            confidence=round(rng.uniform(0.65, 0.92), 2),
+        ))
+
+    total_7d = sum(p.predicted_demand_7d for p in predictions if p.location_type != "WH")
+    total_30d = sum(p.predicted_demand_30d for p in predictions if p.location_type != "WH")
+
+    # Recommendation rule (mock):
+    #   total_7d ≥ 800 → STRONG_BUY · 400~799 → BUY · 200~399 → NEUTRAL · <200 → PASS
+    if total_7d >= 800: rec = "STRONG_BUY"
+    elif total_7d >= 400: rec = "BUY"
+    elif total_7d >= 200: rec = "NEUTRAL"
+    else: rec = "PASS"
+
+    return NewBookPredictResp(
+        isbn13=req.isbn13,
+        model_version="mock-pending-gcp-vertexai-v0.1",
+        predicted_at=datetime.now(timezone.utc).isoformat(),
+        predictions=predictions,
+        total_7d=round(total_7d, 1),
+        total_30d=round(total_30d, 1),
+        recommendation=rec,
+    )
