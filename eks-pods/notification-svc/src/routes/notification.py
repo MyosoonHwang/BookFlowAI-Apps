@@ -70,7 +70,8 @@ EVENT_CHANNEL = {
 
 
 _LOGIC_APPS_EVENTS = {
-    "DailyPlanFinalized", "SpikeUrgent",
+    "ForecastCompleted", "DailyPlanFinalized",
+    "SpikeUrgent", "NegotiationDelay", "DeliveryCompleted",
 }
 
 
