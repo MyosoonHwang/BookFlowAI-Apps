@@ -20,6 +20,7 @@ EventType = Literal[
     "NewBookRequest",
     "ReturnPending",
     "DailyPlanFinalized", "ApprovalDelayed", "InboundRejected",
+    "ForecastCompleted", "DeliveryCompleted",
     "LambdaAlarm", "DeploymentRollback",
     # D5-8 Notion 3.5 · 매장 → 본사/물류 의견 제출 (운영 확장)
     "BranchFeedback",
