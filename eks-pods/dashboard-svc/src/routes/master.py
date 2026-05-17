@@ -593,7 +593,15 @@ def inventory_heatmap(ctx: AuthContext = Depends(require_auth)):
         where.append("i.location_id = %s")
         params.append(ctx.scope_store_id)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    # incoming = 운송중/승인된 발주의 도착예정 수량 (target_location × isbn 별).
+    #   real_short_qty = raw 부족 − incoming → 운송중 차감 후 "실제 추가 발주 필요한" 양.
     sql = f"""
+        WITH incoming AS (
+            SELECT target_location_id AS loc, isbn13, SUM(qty) AS inc_qty
+              FROM pending_orders
+             WHERE status IN ('APPROVED', 'IN_TRANSIT')
+             GROUP BY target_location_id, isbn13
+        )
         SELECT i.location_id,
                l.name, l.location_type, l.region, l.wh_id,
                count(*) AS sku_count,
@@ -601,9 +609,12 @@ def inventory_heatmap(ctx: AuthContext = Depends(require_auth)):
                sum(i.reserved_qty) AS reserved_qty,
                count(*) FILTER (WHERE (i.on_hand - i.reserved_qty) <= COALESCE(i.safety_stock, 0)) AS low_count,
                count(*) FILTER (WHERE i.on_hand = 0) AS zero_count,
-               COALESCE(sum(GREATEST(0, COALESCE(i.safety_stock, 0) - (i.on_hand - i.reserved_qty))), 0) AS short_qty
+               COALESCE(sum(GREATEST(0, COALESCE(i.safety_stock, 0) - (i.on_hand - i.reserved_qty))), 0) AS short_qty,
+               COALESCE(sum(GREATEST(0, COALESCE(i.safety_stock, 0) - (i.on_hand - i.reserved_qty)
+                                          - COALESCE(inc.inc_qty, 0))), 0) AS real_short_qty
           FROM inventory i
           LEFT JOIN locations l ON l.location_id = i.location_id
+          LEFT JOIN incoming inc ON inc.loc = i.location_id AND inc.isbn13 = i.isbn13
         {where_sql}
          GROUP BY i.location_id, l.name, l.location_type, l.region, l.wh_id
          ORDER BY i.location_id
@@ -626,6 +637,7 @@ def inventory_heatmap(ctx: AuthContext = Depends(require_auth)):
                 "low_count":     r[8],
                 "zero_count":    r[9],
                 "short_qty":     int(r[10] or 0),
+                "real_short_qty": int(r[11] or 0),
             }
             for r in rows
         ],

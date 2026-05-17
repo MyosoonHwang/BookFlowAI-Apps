@@ -89,6 +89,8 @@ export default function Inventory() {
   const totalZero = items.reduce((s, c) => s + c.zero_count, 0);
   // 부족 수량 — 안전재고 미달분 합 (Σ max(0, 안전재고 − 가용)). heatmap short_qty 합.
   const totalShort = items.reduce((s, c) => s + (c.short_qty ?? 0), 0);
+  // 실질 부족 — raw 부족에서 운송중(APPROVED/IN_TRANSIT) 도착예정분을 차감한 값.
+  const totalRealShort = items.reduce((s, c) => s + (c.real_short_qty ?? 0), 0);
 
   // AnomalyBanner 입력: 위치 단위 카운트 (location 1개라도 zero/low 면 카운트)
   const zeroLocations = items.filter((c) => c.zero_count > 0).length;
@@ -175,9 +177,9 @@ export default function Inventory() {
           <div className="metric-value text-bf-danger">{totalZero.toLocaleString()}</div>
         </div>
         <div className="metric-card">
-          <div className="metric-label flex items-center">부족 수량<HelpHint text="안전재고 미달분 합 — Σ max(0, 안전재고 − 가용). 보충 필요한 총 권수." /></div>
+          <div className="metric-label flex items-center">부족 수량<HelpHint text="안전재고 미달분 합 — Σ max(0, 안전재고 − 가용). 운송중 도착예정분 차감 전 raw 값." /></div>
           <div className="metric-value text-bf-warn">{totalShort.toLocaleString()}</div>
-          <div className="text-[10px] text-bf-muted mt-1">안전재고선까지 보충 필요량</div>
+          <div className="text-[10px] text-bf-muted mt-1">운송중 반영 실질 부족 <span className="text-bf-text font-semibold">{totalRealShort.toLocaleString()}</span></div>
         </div>
       </div>
 
