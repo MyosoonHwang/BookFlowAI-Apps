@@ -113,7 +113,6 @@ def get_recipients(event_type: str, payload: dict | None = None) -> list[dict]:
         # 전 레벨 — 본사+경영진+물류센터+지점
         "ForecastCompleted":   _hq() + _wh() + _branches(),
         "DailyPlanFinalized":  _hq() + _wh() + _branches(),
-        "DeliveryCompleted":   _hq() + _wh() + _branches(),
 
         # 승인요청 — 출발지/도착지 유형 무관하게 전 레벨 수신
         "OrderPending":        _hq() + _wh() + _branches(),

@@ -70,17 +70,15 @@ EVENT_CHANNEL = {
 
 
 # event_type → Logic Apps 워크플로 매핑
-# notification/        → SpikeUrgent, NegotiationDelay, DailyPlanFinalized (긴급 알림)
-# delivery-completed/  → DeliveryCompleted (운송완료 입고)
-# approval-request/    → ForecastCompleted (수요예측 완료 → 발주계획 승인요청), OrderPending (개별 승인요청)
-# stock-depart/        → StockDepartPending (운송시작 도착지 알림)
-# stock-arrival/       → StockArrivalPending (운송완료 출발지 알림)
+# notification/     → SpikeUrgent, NegotiationDelay, DailyPlanFinalized (긴급 알림)
+# approval-request/ → ForecastCompleted (수요예측 완료 → 발주계획 승인요청), OrderPending (개별 승인요청)
+# stock-depart/     → StockDepartPending (운송시작 도착지 담당자 1명)
+# stock-arrival/    → StockArrivalPending (운송완료 출발지 담당자 1명)
 _EVENT_LOGIC_APPS: dict[str, str] = {
-    "ForecastCompleted":  "approval_request",  # 수요예측 완료 → approval-request Logic App 트리거
+    "ForecastCompleted":  "approval_request",
     "DailyPlanFinalized": "notification",
     "SpikeUrgent":        "notification",
     "NegotiationDelay":   "notification",
-    "DeliveryCompleted":  "delivery_completed",
     "InboundRejected":    "notification",   # 5분 batch flush 경로 (main.py _flush_inbound_rejected)
     "StockDepartPending": "stock_depart",
     "StockArrivalPending":"stock_arrival",
@@ -93,12 +91,10 @@ def _get_logic_apps_url(event_type: str) -> str | None:
     if key is None:
         return None
     url_map = {
-        "notification":       settings.logic_apps_url,
-        "forecast_completed": settings.logic_apps_forecast_completed_url,
-        "delivery_completed": settings.logic_apps_delivery_completed_url,
-        "approval_request":   settings.logic_apps_approval_request_url,
-        "stock_depart":       settings.logic_apps_stock_depart_url,
-        "stock_arrival":      settings.logic_apps_stock_arrival_url,
+        "notification":    settings.logic_apps_url,
+        "approval_request":settings.logic_apps_approval_request_url,
+        "stock_depart":    settings.logic_apps_stock_depart_url,
+        "stock_arrival":   settings.logic_apps_stock_arrival_url,
     }
     url = url_map.get(key, "")
     return url.strip() or None
