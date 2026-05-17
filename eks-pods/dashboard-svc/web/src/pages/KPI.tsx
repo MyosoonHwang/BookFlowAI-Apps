@@ -332,7 +332,7 @@ export default function KPI() {
           <div className="metric-value">{ov.data?.pending_orders?.items.length ?? '-'}</div>
         </div>
         <div className="metric-card">
-          <div className="metric-label">5-pod 상태</div>
+          <div className="metric-label">백엔드 Pod 상태</div>
           <div className="metric-value text-base">
             <span
               className={

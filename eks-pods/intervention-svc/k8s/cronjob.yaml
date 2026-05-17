@@ -7,9 +7,9 @@ metadata:
     app: intervention-svc
     component: cronjob
 spec:
-  # 07:00 KST = 22:00 UTC (전날). dev RDS 가 야간 destroy 되므로
-  # 평일 가동 9-18 KST 시간대를 피해 매일 22:00 UTC 한 번 실행되도록.
-  schedule: "0 22 * * *"
+  # 08:00 KST = 23:00 UTC (전날). 발의일 오전 8시 일괄 batch (URGENT 자동 승인 + NORMAL D-1 자동 거절).
+  # 평일 가동 9-18 KST 업무시간 직전에 한 번 실행.
+  schedule: "0 23 * * *"
   timeZone: "UTC"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
