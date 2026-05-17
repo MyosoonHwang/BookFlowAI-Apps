@@ -82,17 +82,13 @@ export default function Inventory() {
     }
     return m;
   }, [fcQ.data?.items]);
-  const totalPred = useMemo(() => {
-    let s = 0;
-    for (const v of predByLoc.values()) s += v;
-    return s;
-  }, [predByLoc]);
-
   const items = heat.data?.items ?? [];
   const totalSku = items.reduce((s, c) => s + c.sku_count, 0);
   const totalQty = items.reduce((s, c) => s + c.total_qty, 0);
   const totalLow = items.reduce((s, c) => s + c.low_count, 0);
   const totalZero = items.reduce((s, c) => s + c.zero_count, 0);
+  // 부족 수량 — 안전재고 미달분 합 (Σ max(0, 안전재고 − 가용)). heatmap short_qty 합.
+  const totalShort = items.reduce((s, c) => s + (c.short_qty ?? 0), 0);
 
   // AnomalyBanner 입력: 위치 단위 카운트 (location 1개라도 zero/low 면 카운트)
   const zeroLocations = items.filter((c) => c.zero_count > 0).length;
@@ -146,8 +142,8 @@ export default function Inventory() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="h1">전사 재고 현황</h1>
-        <p className="text-bf-muted text-xs mt-1">14개 위치 · 보유/예약/부족 한눈 보기 · 1분 자동 갱신 (재고 변동은 Redis 실시간)</p>
+        <h1 className="h1">{role === 'hq-admin' ? '전사' : role === 'branch-clerk' ? '내 매장' : '권역'} 재고 현황</h1>
+        <p className="text-bf-muted text-xs mt-1">{items.length}개 위치 · 보유/예약/부족 한눈 보기 · 1분 자동 갱신 (재고 변동은 Redis 실시간)</p>
       </div>
 
       <AnomalyBanner
@@ -170,17 +166,18 @@ export default function Inventory() {
           <div className="metric-value">{totalQty.toLocaleString()}</div>
         </div>
         <div className="metric-card">
-          <div className="metric-label flex items-center">재고 부족<HelpHint text="가용 (on_hand - reserved) ≤ 10 인 SKU 의 위치별 합." /></div>
+          <div className="metric-label flex items-center">재고 부족<HelpHint text="가용 (on_hand - reserved) ≤ 안전재고 인 SKU 수." /></div>
           <div className="metric-value text-bf-warn">{totalLow.toLocaleString()}</div>
+          <div className="text-[10px] text-bf-muted mt-1">안전재고 미달 SKU</div>
         </div>
         <div className="metric-card">
           <div className="metric-label flex items-center">완전 소진<HelpHint text="on_hand = 0 인 SKU 의 위치별 합. 즉시 발주 필요." /></div>
           <div className="metric-value text-bf-danger">{totalZero.toLocaleString()}</div>
         </div>
         <div className="metric-card">
-          <div className="metric-label flex items-center">AI D+1 예측 수요<HelpHint text="forecast-svc D+1 forecast_cache 전 매장 합 (권/일). 5일치 = 안전재고 권장선." /></div>
-          <div className="metric-value">{Math.round(totalPred).toLocaleString()}</div>
-          <div className="text-[10px] text-bf-muted mt-1">권/일 · 5일치 {Math.round(totalPred * 5).toLocaleString()}</div>
+          <div className="metric-label flex items-center">부족 수량<HelpHint text="안전재고 미달분 합 — Σ max(0, 안전재고 − 가용). 보충 필요한 총 권수." /></div>
+          <div className="metric-value text-bf-warn">{totalShort.toLocaleString()}</div>
+          <div className="text-[10px] text-bf-muted mt-1">안전재고선까지 보충 필요량</div>
         </div>
       </div>
 
