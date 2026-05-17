@@ -2,17 +2,34 @@
 // 기술 식별자는 그대로 두되, UI 노출 텍스트는 모두 이 파일을 거치게 한다.
 
 export const ORDER_TYPE_KO: Record<string, string> = {
-  REBALANCE:       '지점 재분배',
-  WH_TRANSFER:     '권역 이동',
-  PUBLISHER_ORDER: '출판사 발주',
+  WH_TO_STORE:     '🏬 매장 보충',
+  REBALANCE:       '🔄 매장 간 재분배',
+  WH_TRANSFER:     '🚛 권역 간 이동',
+  PUBLISHER_ORDER: '📦 외부 발주',
 };
 
+// order_type 별 컬러 일관 적용 (캘린더 cell · 승인 row).
+//   REBALANCE=초록 · WH_TO_STORE=파랑 · WH_TRANSFER=보라 · PUBLISHER_ORDER=주황
+// 클래스명 ot-{order_type} 가 styles.css 에서 --ot CSS 변수 정의.
+export function orderTypeClass(order_type: string): string {
+  return `ot-${order_type}`;
+}
+
 export const ORDER_STATUS_KO: Record<string, string> = {
-  PENDING:  '대기 중',
-  APPROVED: '승인됨',
-  REJECTED: '거절됨',
-  EXECUTED: '실행됨',
-  CANCELED: '취소됨',
+  PENDING:       '⏳ 협의 중',
+  APPROVED:      '📋 계획 확정',
+  IN_TRANSIT:    '🚚 운송 중',
+  EXECUTED:      '✅ 완료',
+  AUTO_EXECUTED: '⚡ 자동 실행',
+  REJECTED:      '❌ 거부됨',
+  CANCELED:      '취소됨',
+};
+
+// PR-B 4-step state machine v2 — REJECTED rejection_stage 라벨
+export const REJECTION_STAGE_KO: Record<string, string> = {
+  PENDING:    '협의 단계 거부',
+  APPROVED:   '발송 전 취소',
+  IN_TRANSIT: '운송 중 반품 (재고 복원)',
 };
 
 export const URGENCY_KO: Record<string, string> = {

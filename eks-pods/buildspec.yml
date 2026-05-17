@@ -85,7 +85,8 @@ phases:
       - |
         for pod in $PODS; do
           echo "=== Building $pod ==="
-          docker build -t "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG" "$pod"
+          # 2026-05-15 v5 fix: --no-cache 강제 (frontend Vite build stale 회피)
+          docker build --no-cache -t "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG" "$pod"
           docker tag "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG" "$ECR_REGISTRY/$PROJECT_NAME/$pod:latest"
           docker push "$ECR_REGISTRY/$PROJECT_NAME/$pod:$IMAGE_TAG"
           docker push "$ECR_REGISTRY/$PROJECT_NAME/$pod:latest"
@@ -96,6 +97,12 @@ phases:
       - kubectl get ns "$NAMESPACE" 2>/dev/null || kubectl create namespace "$NAMESPACE"
 
       # ── 3. K8s manifest envsubst → apply ──
+      # RDS endpoint · DuckDNS FQDN 동적 fetch (매일 redeploy 시 stale 방지)
+      - export RDS_HOST=$(aws rds describe-db-instances --region "$AWS_REGION" --db-instance-identifier bookflow-postgres --query "DBInstances[0].Endpoint.Address" --output text)
+      # 2026-05-15: REDIS_HOST 동적 fetch (매일 redeploy 시 ElastiCache endpoint 변동 — configmap stale 회피)
+      - export REDIS_HOST=$(aws elasticache describe-cache-clusters --region "$AWS_REGION" --cache-cluster-id bookflow-redis --show-cache-node-info --query "CacheClusters[0].CacheNodes[0].Endpoint.Address" --output text)
+      - export DOMAIN="${DOMAIN:-bookflow.myosoon.store}"
+      - echo "RDS_HOST=$RDS_HOST  REDIS_HOST=$REDIS_HOST  DOMAIN=$DOMAIN"
       - |
         for pod in $PODS; do
           if [ ! -d "$pod/k8s" ]; then
@@ -114,10 +121,14 @@ phases:
         done
 
       # ── 4. Rollout status (Deployment 만 · CronJob 은 skip) ──
+      # manifest 가 image: .../:${IMAGE_TAG} (= git SHA) 라 커밋마다 tag 변경 →
+      # kubectl apply 가 image 필드 변경으로 rollout 을 자동 트리거. restart 불필요.
+      # dashboard-svc 는 multi-stage (node build → python serve · web bundle 큼) 라
+      # 시작 시간 더 길어서 timeout 300s. 다른 pod 도 graceful term + readiness 여유 고려해 동일.
       - |
         for pod in $PODS; do
           if kubectl get deployment "$pod" -n "$NAMESPACE" >/dev/null 2>&1; then
-            kubectl rollout status deployment/"$pod" -n "$NAMESPACE" --timeout=180s || exit 1
+            kubectl rollout status deployment/"$pod" -n "$NAMESPACE" --timeout=300s || exit 1
           fi
         done
       - echo "=== Build complete ==="

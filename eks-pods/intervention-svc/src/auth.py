@@ -21,10 +21,17 @@ ROLE_USERS = {
     "wh-manager-2": ("00000000-0000-0000-0000-000000000003", "wh-manager",      2, None),
     "branch-clerk": ("00000000-0000-0000-0000-000000000004", "branch-clerk", None,    1),
 }
+# 2026-05-15 v3 시연 편의 — 12 매장 mock token 추가 (location_id 1~12)
+# 실제 운영은 Entra ID OIDC 사용. mock 은 시연/테스트 전용.
+for _sid in range(1, 13):
+    ROLE_USERS[f"branch-clerk-{_sid}"] = (
+        f"00000000-0000-0000-0000-{_sid:012d}", "branch-clerk", None, _sid,
+    )
 
 
 class AuthContext:
-    __slots__ = ("user_id", "role", "scope_wh_id", "scope_store_id", "token")
+    # _order_meta: authority.require_authority Depends 가 endpoint 내부 사용 위해 attach
+    __slots__ = ("user_id", "role", "scope_wh_id", "scope_store_id", "token", "_order_meta")
 
     def __init__(self, user_id, role, scope_wh_id, scope_store_id, token=None):
         self.user_id = user_id
@@ -32,6 +39,7 @@ class AuthContext:
         self.scope_wh_id = scope_wh_id
         self.scope_store_id = scope_store_id
         self.token = token
+        self._order_meta = None
 
 
 def _parse_mock(token: str, raw: str) -> AuthContext:

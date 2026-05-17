@@ -20,7 +20,13 @@ ROLE_USERS = {
     "wh-manager-1": ("00000000-0000-0000-0000-000000000002", "wh-manager",      1, None),
     "wh-manager-2": ("00000000-0000-0000-0000-000000000003", "wh-manager",      2, None),
     "branch-clerk": ("00000000-0000-0000-0000-000000000004", "branch-clerk", None,    1),
+    "system":       ("00000000-0000-0000-0000-000000000099", "system",       None, None),
 }
+# 2026-05-15 v3 시연 편의 — 12 매장 mock token (location_id 1~12)
+for _sid in range(1, 13):
+    ROLE_USERS[f"branch-clerk-{_sid}"] = (
+        f"00000000-0000-0000-0000-{_sid:012d}", "branch-clerk", None, _sid,
+    )
 
 
 class AuthContext:

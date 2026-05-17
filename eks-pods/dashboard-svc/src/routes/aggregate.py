@@ -3,9 +3,10 @@ import asyncio
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from ..auth import AuthContext, _check_store_scope, require_auth
+from ..auth import AuthContext, _check_location_scope, require_auth
+from ..db import db_conn
 from fastapi import Body
 from fastapi.responses import JSONResponse
 
@@ -14,8 +15,11 @@ from ..clients import (
     get_intervention_queue,
     get_notifications_recent,
     get_pending_orders,
+    get_pending_summary,
     get_warehouse_inventory,
     post_decision_decide,
+    patch_intervention_pending_order,
+    post_branch_feedback,
     post_intervention_approve,
     post_intervention_book_status,
     post_intervention_new_book_approve,
@@ -44,11 +48,28 @@ async def inventory(wh_id: int, ctx: AuthContext = Depends(require_auth)) -> Any
 
 @router.get("/forecast/{store_id}/{snapshot_date}")
 async def forecast(store_id: int, snapshot_date: date, ctx: AuthContext = Depends(require_auth)) -> Any:
-    """FR-A7.3 매장 스코프 enforce — branch-clerk 자기 매장만."""
-    _check_store_scope(ctx, store_id)
+    """매장 스코프 enforce — branch-clerk 자기 매장 + wh-manager 자기 권역."""
+    with db_conn() as conn, conn.cursor() as cur:
+        _check_location_scope(ctx, store_id, cur)
     data = await get_forecast(store_id, str(snapshot_date), ctx.token)
     if data is None:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="forecast-svc unavailable")
+    return data
+
+
+@router.get("/pending/grouped")
+async def pending_grouped(
+    ctx: AuthContext = Depends(require_auth),
+    date: str | None = None,
+) -> Any:
+    """D2 Home 메인 카드 — 오늘 batch 처리 현황 + 사용자 검토 필요.
+
+    intervention-svc 의 /intervention/grouped proxy. role-scope 자동.
+    """
+    from ..clients import get_intervention_grouped
+    data = await get_intervention_grouped(ctx.token, date=date)
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="intervention-svc unavailable")
     return data
 
 
@@ -56,15 +77,44 @@ async def forecast(store_id: int, snapshot_date: date, ctx: AuthContext = Depend
 async def pending(
     ctx: AuthContext = Depends(require_auth),
     limit: int = 50,
+    offset: int = 0,
+    order_type: str | None = None,
+    wh_id: int | None = None,
+    include_history: bool = False,
+    days: int = 7,
+    date: str | None = None,
+    expected_date: str | None = None,
+) -> Any:
+    """V6.2 3-stage 의사결정 큐.
+
+    - default: PENDING 만
+    - expected_date=YYYY-MM-DD: expected_arrival_at 기반 (캘린더 cell click 정합 · PR-C v2)
+    - date=YYYY-MM-DD: COALESCE(approved_at, executed_at, created_at) 기반 (legacy)
+    - include_history=true (deprecated): PENDING + 최근 N일. /pending/summary + date 권장.
+    intervention-svc 가 role/scope 자동 적용 (wh-manager 는 자기 wh 만, hq-admin 은 옵션 wh_id).
+    """
+    data = await get_pending_orders(
+        ctx.token, limit=limit, offset=offset, order_type=order_type, wh_id=wh_id,
+        include_history=include_history, days=days, date=date, expected_date=expected_date,
+    )
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="intervention-svc unavailable")
+    return data
+
+
+@router.get("/pending/summary")
+async def pending_summary(
+    ctx: AuthContext = Depends(require_auth),
+    days: int = 7,
     order_type: str | None = None,
     wh_id: int | None = None,
 ) -> Any:
-    """V6.2 3-stage 의사결정 PENDING 큐.
+    """일자별 카운트 가벼운 summary — DateHistoryTabs pill row count 용.
 
-    intervention-svc 가 role/scope 자동 적용 (wh-manager 는 자기 wh 만, hq-admin 은 옵션 wh_id).
-    `order_type`: REBALANCE | WH_TRANSFER | PUBLISHER_ORDER 필터.
+    intervention-svc /intervention/queue/summary 프록시.
+    응답 = {days, items: [{date, PENDING, APPROVED, EXECUTED, REJECTED, AUTO_EXECUTED, total}]}
     """
-    data = await get_pending_orders(ctx.token, limit=limit, order_type=order_type, wh_id=wh_id)
+    data = await get_pending_summary(ctx.token, days=days, order_type=order_type, wh_id=wh_id)
     if data is None:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="intervention-svc unavailable")
     return data
@@ -100,6 +150,32 @@ async def intervene_reject(body: dict = Body(...), ctx: AuthContext = Depends(re
     return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
 
 
+@router.post("/intervene/batch")
+async def intervene_batch(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """일괄 승인/거절 (사용자 결정 2026-05-13).
+
+    body: {action: 'approve'|'reject', items: [{order_id, approval_side, reject_reason?}]}
+    response: {total, ok, failed, errors}
+    """
+    from ..clients import post_intervention_batch
+    sc, data = await post_intervention_batch(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.patch("/pending-orders/{order_id}")
+async def edit_pending_order(order_id: str, body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """D5-7 WH AI 추천 수정 (수량/대상 매장 · Notion 2.6) — intervention-svc PATCH 프록시."""
+    sc, data = await patch_intervention_pending_order(order_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/branch-feedback")
+async def branch_feedback(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """D5-8 Branch → 본사/물류 의견 제출 (Notion 3.5) — notification-svc 프록시."""
+    sc, data = await post_branch_feedback(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "notification-svc unavailable"})
+
+
 @router.post("/notify/send")
 async def notify_send(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
     sc, data = await post_notification_send(body, ctx.token)
@@ -111,6 +187,90 @@ async def decide(body: dict = Body(...), ctx: AuthContext = Depends(require_auth
     """HQ Decision 페이지 - 의사결정 1건 생성 (decision-svc /decide proxy · 3-stage cascade)."""
     sc, data = await post_decision_decide(body, ctx.token)
     return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
+
+
+@router.post("/cascade/run-batch")
+async def cascade_run_batch(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """일괄 cascade 결정 — N items 한 번에 (시연 trigger + 매일 03:30 batch).
+
+    기존 frontend N 회 호출 → 503 race / 느림 해소. backend 가 sequential 처리 + 결과 요약.
+    body: {items: [{isbn13, target_location_id, qty, note?}]}
+    response: {total, s1, s2, s3, failed, errors}
+    """
+    from ..clients import post_decision_decide_batch
+    sc, data = await post_decision_decide_batch(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
+
+
+@router.post("/inbound/batch-receive")
+async def inbound_batch_receive(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """일괄 입고 수령 — intervention-svc /inbound/batch-receive proxy."""
+    from ..clients import post_intervention_inbound_batch_receive
+    sc, data = await post_intervention_inbound_batch_receive(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/intervene/approve-all-today")
+async def intervene_approve_all_today(body: dict = Body(default={}), ctx: AuthContext = Depends(require_auth)):
+    """오늘 PENDING 전체 일괄 승인 — body: {order_type?} · role/scope 자동.
+
+    페이지네이션 우회: 서버측 fetch + bulk SQL · WH_TRANSFER 양측 자동 처리.
+    """
+    from ..clients import post_intervention_approve_all_today
+    sc, data = await post_intervention_approve_all_today(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/cascade/plan-daily")
+async def cascade_plan_daily(body: dict = Body(default={}), ctx: AuthContext = Depends(require_auth)):
+    """D+1 forecast 기반 익일 배치 발의 — decision-svc /decision/plan-daily proxy.
+
+    BQ 결과 테이블 → forecast_cache (정식) / 현재는 RDS 직읽음 임시.
+    body (optional): {"snapshot_date": "YYYY-MM-DD"}  default = tomorrow KST.
+    response: {snapshot_date, rows_created, by_stage{1,2,3}, isbns_planned}
+    """
+    from ..clients import post_decision_plan_daily
+    sc, data = await post_decision_plan_daily(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "decision-svc unavailable"})
+
+
+@router.get("/decision/plan-daily/{snapshot_date}/summary")
+async def decision_plan_daily_summary(snapshot_date: str, ctx: AuthContext = Depends(require_auth)):
+    """Final Plan 매트릭스 summary — decision-svc /decision/plan-daily/{date}/summary 프록시.
+
+    role/scope 자동 (decision-svc 가 처리). 응답:
+      {snapshot_date, by_stage_status: [{order_type, status, cnt, qty_total}],
+       totals: {total_orders, total_qty, stages, statuses}}
+    """
+    from ..clients import get_plan_summary
+    data = await get_plan_summary(snapshot_date, ctx.token)
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="decision-svc unavailable")
+    return data
+
+
+@router.get("/decision/plan-daily/{snapshot_date}/items")
+async def decision_plan_daily_items(
+    snapshot_date: str,
+    ctx: AuthContext = Depends(require_auth),
+    status_: str | None = Query(default=None, alias="status"),
+    order_type: str | None = None,
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+):
+    """Final Plan items 상세 list — decision-svc /decision/plan-daily/{date}/items 프록시.
+
+    status / order_type / q 필터 + pagination. role/scope 자동.
+    """
+    from ..clients import get_plan_items
+    data = await get_plan_items(
+        snapshot_date, ctx.token,
+        status=status_, order_type=order_type, q=q, offset=offset, limit=limit,
+    )
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="decision-svc unavailable")
+    return data
 
 
 @router.post("/inventory/adjust")
@@ -250,3 +410,96 @@ async def overview(wh_id: int, ctx: AuthContext = Depends(require_auth)) -> dict
             ] if val is None
         ],
     }
+
+
+# ─── PR-B (2026-05-15) 4-step state machine v2 — /dashboard/orders/* proxy ──
+# intervention-svc /intervention/orders/* 호출 (state_machine.py · race-safe SQL).
+# 매트릭스: approve / dispatch / receive / reject / patch + batch + calendar.
+from ..clients import (
+    post_orders_approve, post_orders_dispatch, post_orders_receive,
+    post_orders_reject, patch_orders,
+    post_orders_batch_approve, post_orders_batch_dispatch, post_orders_batch_receive,
+    get_orders_calendar,
+)
+
+
+@router.post("/orders/{order_id}/approve")
+async def orders_approve(order_id: str, body: dict = Body(default={}),
+                          ctx: AuthContext = Depends(require_auth)):
+    """PENDING → APPROVED (양측 ✓) · body: {approval_side?: 'SOURCE'|'TARGET'|'FINAL'}"""
+    sc, data = await post_orders_approve(order_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/orders/{order_id}/dispatch")
+async def orders_dispatch(order_id: str, body: dict = Body(default={}),
+                           ctx: AuthContext = Depends(require_auth)):
+    """APPROVED → IN_TRANSIT · source -qty (inventory-svc /adjust 단일 writer)."""
+    sc, data = await post_orders_dispatch(order_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/orders/{order_id}/receive")
+async def orders_receive(order_id: str, body: dict = Body(default={}),
+                          ctx: AuthContext = Depends(require_auth)):
+    """IN_TRANSIT → EXECUTED · target +qty."""
+    sc, data = await post_orders_receive(order_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/orders/{order_id}/reject")
+async def orders_reject(order_id: str, body: dict = Body(...),
+                         ctx: AuthContext = Depends(require_auth)):
+    """any → REJECTED · rejection_stage 자동 기록 · IN_TRANSIT 거부 시만 source +qty 복원."""
+    sc, data = await post_orders_reject(order_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.patch("/orders/{order_id}")
+async def orders_patch(order_id: str, body: dict = Body(...),
+                        ctx: AuthContext = Depends(require_auth)):
+    """qty / target_location 수정 (PENDING/APPROVED 만)."""
+    sc, data = await patch_orders(order_id, body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/orders/batch-approve")
+async def orders_batch_approve(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """일괄 승인 · body: {order_ids: list[str]}"""
+    sc, data = await post_orders_batch_approve(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/orders/batch-dispatch")
+async def orders_batch_dispatch(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    sc, data = await post_orders_batch_dispatch(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.post("/orders/batch-receive")
+async def orders_batch_receive(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    sc, data = await post_orders_batch_receive(body, ctx.token)
+    return JSONResponse(status_code=sc, content=data or {"detail": "intervention-svc unavailable"})
+
+
+@router.get("/orders/calendar")
+async def orders_calendar(
+    from_date: str, to_date: str, plan_view: str = "all",
+    ctx: AuthContext = Depends(require_auth),
+):
+    """캘린더 cell count · role/scope 자동 필터 (date × {inbound,outbound,in_transit,executed}).
+    plan_view: all(전체) · mine(물류센터 계획) · observe(지점 계획)."""
+    data = await get_orders_calendar(from_date, to_date, ctx.token, plan_view)
+    return data or {"items": [], "_source": "intervention-svc unavailable"}
+
+
+@router.post("/forecast/newbook/predict-demand")
+async def newbook_predict_demand(body: dict = Body(...), ctx: AuthContext = Depends(require_auth)):
+    """v5 2026-05-15: 신간 편입 결정용 VertexAI 수요예측 — forecast-svc 프록시.
+    body: {isbn13, publisher_id?, category?, expected_price?}
+    """
+    from ..clients import post_newbook_predict_demand
+    status_code, data = await post_newbook_predict_demand(body, ctx.token)
+    if status_code >= 400:
+        raise HTTPException(status_code=status_code, detail=data)
+    return data

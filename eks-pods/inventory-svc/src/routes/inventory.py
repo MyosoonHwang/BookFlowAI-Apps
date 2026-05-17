@@ -24,6 +24,45 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 REDIS_CHANNEL_STOCK = "stock.changed"
 
 
+def _check_inventory_read_scope(cur, ctx: AuthContext, wh_id: int) -> None:
+    """Inventory read 권한 (FR-A7.4 · 권한 매트릭스).
+
+    - hq-admin: 모든 wh OK (전권)
+    - wh-manager: scope_wh_id == wh_id 만 OK (자기 권역)
+    - branch-clerk: 자기 매장 (scope_store_id) 가 속한 wh 만 OK (locations.wh_id 매칭)
+
+    Raises HTTPException 403/404 on violation.
+    """
+    if ctx.role == "hq-admin":
+        return
+
+    if ctx.role == "wh-manager":
+        if ctx.scope_wh_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="wh-manager scope_wh_id 부재 (인증 토큰 손상)")
+        if ctx.scope_wh_id != wh_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"자기 권역만 조회 가능 (scope_wh_id={ctx.scope_wh_id} · 요청 wh_id={wh_id})")
+        return
+
+    if ctx.role == "branch-clerk":
+        if ctx.scope_store_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="branch-clerk scope_store_id 부재 (인증 토큰 손상)")
+        cur.execute("SELECT wh_id FROM locations WHERE location_id = %s", (ctx.scope_store_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"branch-clerk scope_store_id={ctx.scope_store_id} locations 미존재")
+        if row[0] != wh_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"자기 매장 권역만 조회 가능 (scope_store_id={ctx.scope_store_id} · wh_id={row[0]} · 요청 wh_id={wh_id})")
+        return
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"role '{ctx.role}' 는 inventory 조회 권한 없음")
+
+
 def _check_inventory_write_perm(cur, ctx: AuthContext, location_id: int) -> None:
     """Inventory mutation 권한 검증 (FR-A6.6 + 권한 매트릭스).
 
@@ -69,16 +108,10 @@ def _inventory_item_from_row(row: tuple) -> InventoryItem:
     """DB row → InventoryItem 매핑 (FR-A7.4 enriched).
 
     Row column 순서:
-      0: isbn13
-      1: location_id
-      2: on_hand
-      3: reserved_qty
-      4: safety_stock (NULL → 0 으로 SQL 측 COALESCE 권장 · 모델에서도 안전)
-      5: updated_at
-      6: title (NULL 가능 · books LEFT JOIN)
-      7: expected_soldout_at (NULL 가능)
-      8: incoming_qty (pending_orders APPROVED · target=self · 합)
-      9: outgoing_qty (pending_orders APPROVED · source=self · 합)
+      0: isbn13       · 1: location_id · 2: on_hand · 3: reserved_qty
+      4: safety_stock · 5: updated_at
+      6: title · 7: author · 8: cover_url · 9: expected_soldout_at
+      10: incoming_qty · 11: outgoing_qty
     """
     return InventoryItem(
         isbn13=row[0],
@@ -89,49 +122,71 @@ def _inventory_item_from_row(row: tuple) -> InventoryItem:
         available=int(row[2] or 0) - int(row[3] or 0),
         updated_at=row[5],
         title=row[6],
-        expected_soldout_at=row[7],
-        incoming_qty=int(row[8] or 0),
-        outgoing_qty=int(row[9] or 0),
+        author=row[7],
+        cover_url=row[8],
+        expected_soldout_at=row[9],
+        incoming_qty=int(row[10] or 0),
+        outgoing_qty=int(row[11] or 0),
     )
 
 
 @router.get("/current/{wh_id}", response_model=WarehouseInventoryResponse)
 def get_warehouse_inventory(wh_id: int, ctx: AuthContext = Depends(require_auth)):
-    """FR-A7.4 실시간 재고 조회 — 현재고 + 안전재고 + 예상소진일 + 입출고 in-transit 합산."""
-    if ctx.role == "wh-manager" and ctx.scope_wh_id is not None and ctx.scope_wh_id != wh_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="out of warehouse scope")
+    """FR-A7.4 실시간 재고 조회 — 현재고 + 안전재고 + 예상소진일 + 입출고 in-transit 합산.
 
+    권한 (사용자 권한 매트릭스 · 2026-05-14 정정 — 백엔드 필터 필수):
+    - hq-admin: 전권
+    - wh-manager: scope_wh_id == wh_id 만 (자기 권역 read)
+    - branch-clerk: 자기 매장이 속한 wh 만 (locations.wh_id 매칭)
+
+    Stage 2 (권역간 이동) 의사결정용 cross-wh 조회는 decision-svc 내부 SQL 이 직접 수행 ·
+    이 endpoint 는 UI/Dashboard 용으로 strict scope 적용.
+    """
+
+    # Notion 명세: 온라인 매장 재고 출처 = WH 본체 (is_virtual STORE_ONLINE 은 inventory row 없음)
+    # → online 매장도 응답에 포함시키되 quantity 는 WH 본체 inventory 를 substitute (UNION)
     sql = """
         SELECT i.isbn13, i.location_id,
                i.on_hand, i.reserved_qty,
                COALESCE(i.safety_stock, 0) AS safety_stock,
                i.updated_at,
-               b.title,
-               b.expected_soldout_at,
-               COALESCE((
-                   SELECT SUM(po.qty)::int
-                     FROM pending_orders po
-                    WHERE po.target_location_id = i.location_id
-                      AND po.isbn13 = i.isbn13
-                      AND po.status = 'APPROVED'
-                      AND po.executed_at IS NULL
-               ), 0) AS incoming_qty,
-               COALESCE((
-                   SELECT SUM(po.qty)::int
-                     FROM pending_orders po
-                    WHERE po.source_location_id = i.location_id
-                      AND po.isbn13 = i.isbn13
-                      AND po.status = 'APPROVED'
-                      AND po.executed_at IS NULL
-               ), 0) AS outgoing_qty
+               b.title, b.author, b.cover_url, b.expected_soldout_at,
+               COALESCE((SELECT SUM(po.qty)::int FROM pending_orders po
+                   WHERE po.target_location_id = i.location_id AND po.isbn13 = i.isbn13
+                   AND po.status = 'APPROVED' AND po.executed_at IS NULL), 0) AS incoming_qty,
+               COALESCE((SELECT SUM(po.qty)::int FROM pending_orders po
+                   WHERE po.source_location_id = i.location_id AND po.isbn13 = i.isbn13
+                   AND po.status = 'APPROVED' AND po.executed_at IS NULL), 0) AS outgoing_qty
         FROM inventory i
         JOIN locations l ON l.location_id = i.location_id
         LEFT JOIN books b ON b.isbn13 = i.isbn13
         WHERE l.wh_id = %s
-        ORDER BY i.location_id, i.isbn13
+
+        UNION ALL
+
+        -- 온라인 매장: WH 본체 inventory 를 online location_id 로 노출 (출처 = WH)
+        SELECT i.isbn13, online.location_id AS location_id,
+               i.on_hand, i.reserved_qty,
+               COALESCE(i.safety_stock, 0) AS safety_stock,
+               i.updated_at,
+               b.title, b.author, b.cover_url, b.expected_soldout_at,
+               COALESCE((SELECT SUM(po.qty)::int FROM pending_orders po
+                   WHERE po.target_location_id = online.location_id AND po.isbn13 = i.isbn13
+                   AND po.status = 'APPROVED' AND po.executed_at IS NULL), 0) AS incoming_qty,
+               COALESCE((SELECT SUM(po.qty)::int FROM pending_orders po
+                   WHERE po.source_location_id = online.location_id AND po.isbn13 = i.isbn13
+                   AND po.status = 'APPROVED' AND po.executed_at IS NULL), 0) AS outgoing_qty
+        FROM locations online
+        JOIN locations wh ON wh.wh_id = online.wh_id AND wh.location_type = 'WH'
+        JOIN inventory i ON i.location_id = wh.location_id
+        LEFT JOIN books b ON b.isbn13 = i.isbn13
+        WHERE online.wh_id = %s AND online.location_type = 'STORE_ONLINE'
+
+        ORDER BY 2, 1
     """
     with db_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (wh_id,))
+        _check_inventory_read_scope(cur, ctx, wh_id)
+        cur.execute(sql, (wh_id, wh_id))
         rows = cur.fetchall()
 
     items = [_inventory_item_from_row(r) for r in rows]

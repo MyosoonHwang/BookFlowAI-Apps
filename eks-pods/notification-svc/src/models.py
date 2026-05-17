@@ -19,7 +19,15 @@ EventType = Literal[
     "StockDepartPending", "StockArrivalPending",
     "NewBookRequest",
     "ReturnPending",
+    "DailyPlanFinalized", "ApprovalDelayed", "InboundRejected",
+    "ForecastCompleted", "DeliveryCompleted",
     "LambdaAlarm", "DeploymentRollback",
+    # D5-8 Notion 3.5 · 매장 → 본사/물류 의견 제출 (운영 확장)
+    "NewBookSubmittedToHq",
+    "NewBookAcceptedToPublisher",
+    "NewBookRejectedToPublisher",
+    "NewBookDisplayRequest",
+    "BranchFeedback",
 ]
 
 Severity = Literal["INFO", "WARNING", "CRITICAL"]
@@ -54,3 +62,41 @@ class NotificationRow(BaseModel):
 
 class RecentResponse(BaseModel):
     items: list[NotificationRow]
+
+
+class NewBookSubmittedNoticeRequest(BaseModel):
+    request_id: int | None = None
+    isbn13: str | None = Field(default=None, min_length=13, max_length=13)
+    title: str | None = Field(default=None, max_length=500)
+
+
+class NewBookPublisherNoticeRequest(BaseModel):
+    request_id: int | None = None
+    isbn13: str | None = Field(default=None, min_length=13, max_length=13)
+    title: str | None = Field(default=None, max_length=500)
+    publisher_email: str = Field(min_length=3, max_length=200)
+    publisher_name: str | None = Field(default=None, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class NewBookDisplayNoticeRequest(BaseModel):
+    request_id: int | None = None
+    isbn13: str | None = Field(default=None, min_length=13, max_length=13)
+    title: str | None = Field(default=None, max_length=500)
+
+
+# D5-8 Notion 3.5 · Branch → 본사/물류 의견 제출 채널
+FeedbackType = Literal["SLOW_SELLER", "STOCK_REQUEST", "OTHER"]
+
+
+class BranchFeedbackRequest(BaseModel):
+    """매장 (branch-clerk) 이 본사/물류센터로 제출하는 의견."""
+    feedback_type: FeedbackType
+    isbn13: str | None = Field(default=None, min_length=13, max_length=13)
+    message: str = Field(min_length=1, max_length=500)
+
+
+class BranchFeedbackResponse(BaseModel):
+    notification_id: UUID
+    feedback_type: str
+    submitted_at: datetime
