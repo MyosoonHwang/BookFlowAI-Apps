@@ -40,12 +40,23 @@ def _dedup(recipients: list[dict]) -> list[dict]:
     return result
 
 
+def _publisher(payload: dict | None) -> list[dict]:
+    if not payload:
+        return []
+    email = str(payload.get("publisher_email") or "").strip()
+    if not email:
+        return []
+    name = str(payload.get("publisher_name") or "Publisher").strip() or "Publisher"
+    return [{"address": email, "displayName": name}]
+
+
 def get_recipients(event_type: str, payload: dict | None = None) -> list[dict]:
     """Logic Apps trigger payload 에 포함할 recipients 배열 반환."""
     mapping: dict[str, list[dict]] = {
         # 본사 단독
         "AutoExecutedUrgent":  _hq(),
         "NewBookRequest":      _hq(),
+        "NewBookSubmittedToHq": _hq(),
         "ReturnPending":       _hq(),
         "BranchFeedback":      _hq(),
 
@@ -59,6 +70,11 @@ def get_recipients(event_type: str, payload: dict | None = None) -> list[dict]:
         "ForecastCompleted":   _hq() + _wh() + _branches(),
         "DailyPlanFinalized":  _hq() + _wh() + _branches(),
         "DeliveryCompleted":   _hq() + _wh() + _branches(),
+        "NewBookDisplayRequest": _wh() + _branches(),
+
+        # Publisher-facing notices use the email supplied by the caller.
+        "NewBookAcceptedToPublisher": _publisher(payload),
+        "NewBookRejectedToPublisher": _publisher(payload),
 
         # 승인요청 — 출발지/도착지 유형 무관하게 전 레벨 수신
         "OrderPending":        _hq() + _wh() + _branches(),
