@@ -19,6 +19,10 @@ V6.3 MSA Pod #7 · 알림 채널 연결지점 · 12 Logic Apps 이벤트 dispatc
 
 ## API
 - `POST /notification/send` — `{event_type, severity, recipients, payload, correlation_id?}` → Logic Apps + Redis pub + RDS log
+- `POST /notification/new-book/submitted` - publisher -> HQ review notice
+- `POST /notification/new-book/accepted` - HQ -> publisher acceptance notice
+- `POST /notification/new-book/rejected` - HQ -> publisher rejection notice
+- `POST /notification/new-book/display-request` - HQ -> WH/branch display-prep notice
 - `GET /notification/recent?limit=N` — 최근 알림 (dashboard fan-in)
 - `GET /health`
 
