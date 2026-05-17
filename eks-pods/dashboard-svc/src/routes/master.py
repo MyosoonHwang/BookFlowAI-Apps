@@ -579,7 +579,7 @@ def locations(_: AuthContext = Depends(require_auth)):
 
 @router.get("/locations/heatmap")
 def inventory_heatmap(ctx: AuthContext = Depends(require_auth)):
-    """전사 재고 히트맵 - location_id 별 SKU 수 + 보유 수량 + 부족(SKU 가용≤10) (HQ Inventory).
+    """전사 재고 히트맵 - location_id 별 SKU 수 + 보유 수량 + 부족(가용 ≤ 안전재고) + 부족 수량.
 
     44 위치 = WH 2 + 오프라인 매장 10 + 온라인 가상 2 (V3 plan), 시드 데이터 location_id 1-12.
     role-scope: wh-manager → 자기 권역 location · branch-clerk → 자기 매장 한 row.
@@ -599,8 +599,9 @@ def inventory_heatmap(ctx: AuthContext = Depends(require_auth)):
                count(*) AS sku_count,
                sum(i.on_hand)      AS total_qty,
                sum(i.reserved_qty) AS reserved_qty,
-               count(*) FILTER (WHERE (i.on_hand - i.reserved_qty) <= 10) AS low_count,
-               count(*) FILTER (WHERE i.on_hand = 0) AS zero_count
+               count(*) FILTER (WHERE (i.on_hand - i.reserved_qty) <= COALESCE(i.safety_stock, 0)) AS low_count,
+               count(*) FILTER (WHERE i.on_hand = 0) AS zero_count,
+               COALESCE(sum(GREATEST(0, COALESCE(i.safety_stock, 0) - (i.on_hand - i.reserved_qty))), 0) AS short_qty
           FROM inventory i
           LEFT JOIN locations l ON l.location_id = i.location_id
         {where_sql}
@@ -624,6 +625,7 @@ def inventory_heatmap(ctx: AuthContext = Depends(require_auth)):
                 "reserved_qty":  int(r[7] or 0),
                 "low_count":     r[8],
                 "zero_count":    r[9],
+                "short_qty":     int(r[10] or 0),
             }
             for r in rows
         ],

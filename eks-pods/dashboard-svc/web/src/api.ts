@@ -422,6 +422,7 @@ export type LocationCell = {
   reserved_qty: number;
   low_count: number;
   zero_count: number;
+  short_qty: number;
 };
 export const fetchInventoryHeatmap = (role: Role) =>
   getJson<{ items: LocationCell[] }>('/dashboard/locations/heatmap', role);
