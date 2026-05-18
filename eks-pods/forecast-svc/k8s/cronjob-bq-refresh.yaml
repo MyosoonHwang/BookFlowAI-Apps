@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forecast-bq-refresh
+  namespace: bookflow
+  labels:
+    app: forecast-svc
+    component: cronjob
+spec:
+  # 07:00 KST = 22:00 UTC (전날). 업무 시작 전 BigQuery forecast_results → RDS forecast_cache 동기화.
+  # Vertex AI 배치 예측은 전날 11:43 KST 파이프라인 이후 수 시간 내 완료되므로 07:00 KST 에 안전하게 읽을 수 있음.
+  schedule: "0 22 * * *"
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: forecast-svc
+            component: cronjob
+        spec:
+          serviceAccountName: forecast-svc
+          restartPolicy: OnFailure
+          containers:
+            - name: bq-refresh
+              image: ${ECR_REGISTRY}/bookflow/forecast-svc:${IMAGE_TAG}
+              imagePullPolicy: Always
+              command:
+                - python
+                - -c
+                - |
+                  import httpx, sys
+                  resp = httpx.post(
+                      "http://forecast-svc.bookflow.svc.cluster.local/forecast/refresh",
+                      headers={"Authorization": "Bearer mock-token-hq-admin",
+                               "Content-Type": "application/json"},
+                      json={},
+                      timeout=300,
+                  )
+                  print(f"status={resp.status_code} body={resp.text[:300]}")
+                  sys.exit(0 if resp.status_code < 400 else 1)
+              envFrom:
+                - configMapRef:
+                    name: forecast-svc-env
+                - secretRef:
+                    name: forecast-svc-secret
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi

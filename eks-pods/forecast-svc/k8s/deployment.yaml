@@ -18,6 +18,13 @@ spec:
         component: msa-pod
     spec:
       serviceAccountName: forecast-svc
+      volumes:
+        - name: gcp-sa-key
+          secret:
+            secretName: forecast-svc-secret
+            items:
+              - key: FORECAST_GCP_SA_KEY_JSON
+                path: sa-key.json
       containers:
         - name: app
           image: ${ECR_REGISTRY}/bookflow/forecast-svc:${IMAGE_TAG}
@@ -30,6 +37,13 @@ spec:
                 name: forecast-svc-env
             - secretRef:
                 name: forecast-svc-secret
+          env:
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/gcp-sa/sa-key.json
+          volumeMounts:
+            - name: gcp-sa-key
+              mountPath: /var/run/gcp-sa
+              readOnly: true
           resources:
             requests:
               cpu: 100m

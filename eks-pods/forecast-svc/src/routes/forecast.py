@@ -246,6 +246,20 @@ def insufficient_stock(
     return InsufficientStockResponse(snapshot_date=snapshot or date.today(), items=items)
 
 
+def _trigger_plan_daily() -> None:
+    """Fire-and-forget POST to decision-svc /decision/plan-daily after BQ refresh."""
+    url = f"{settings.decision_svc_url}/decision/plan-daily"
+    try:
+        with httpx.Client(timeout=settings.decision_svc_timeout) as client:
+            resp = client.post(url, json={}, headers={"Authorization": "Bearer mock-token-hq-admin"})
+        if resp.status_code >= 400:
+            log.warning("plan-daily trigger returned %s: %s", resp.status_code, resp.text[:200])
+        else:
+            log.info("plan-daily triggered via decision-svc: status=%s", resp.status_code)
+    except Exception as exc:
+        log.warning("plan-daily trigger failed (non-fatal): %s", exc)
+
+
 @router.post("/refresh", response_model=RefreshResponse)
 def refresh(req: RefreshRequest, ctx: AuthContext = Depends(require_auth)):
     """Bulk UPSERT (idempotent), or pull latest forecasts from BigQuery."""
@@ -265,6 +279,9 @@ def refresh(req: RefreshRequest, ctx: AuthContext = Depends(require_auth)):
         with conn.cursor() as cur:
             inserted = _upsert_forecast_rows(cur, rows, now)
         conn.commit()
+
+    if source == "bigquery" and inserted > 0:
+        _trigger_plan_daily()
 
     return RefreshResponse(
         snapshot_date=req.snapshot_date,
@@ -539,6 +556,83 @@ def _response_from_gcp_new_book(req: NewBookPredictReq, data: dict) -> NewBookPr
     )
 
 
+def _call_vertex_sdk_direct(req: NewBookPredictReq) -> NewBookPredictResp:
+    """Call Vertex AI private endpoint directly via SDK — VPN path, no Cloud Function proxy."""
+    try:
+        from google.cloud import aiplatform
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="google-cloud-aiplatform dependency is not installed",
+        ) from exc
+
+    project = settings.gcp_vertex_project_id or settings.bq_project_id
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="FORECAST_GCP_VERTEX_PROJECT_ID (or FORECAST_BQ_PROJECT_ID) is required",
+        )
+
+    init_kwargs: dict = {"project": project, "location": settings.gcp_vertex_location}
+    if settings.gcp_vertex_private_api_endpoint:
+        init_kwargs["api_endpoint"] = settings.gcp_vertex_private_api_endpoint
+
+    aiplatform.init(**init_kwargs)
+    endpoint = aiplatform.Endpoint(endpoint_name=settings.gcp_vertex_endpoint_name)
+    instances = _build_vertex_instances(req)
+    try:
+        prediction = endpoint.predict(instances=instances)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Vertex AI SDK prediction failed: {exc}",
+        ) from exc
+
+    raw_predictions = list(prediction.predictions)
+    if not raw_predictions:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Vertex AI endpoint returned empty predictions",
+        )
+
+    loc_rows = [row for row in _load_active_locations() if row[2] != "WH"]
+    predictions: list[NewBookLocationPred] = []
+    for row, pred in zip(loc_rows, raw_predictions):
+        lid, name, ltype, wh_id = row
+        pred_dict = pred if isinstance(pred, dict) else {}
+        daily = float(pred_dict.get("predicted_demand") or 0)
+        low = float(pred_dict.get("confidence_low") or 0)
+        high = float(pred_dict.get("confidence_high") or 0)
+        confidence = 0.8
+        if high > 0:
+            confidence = max(0.5, min(0.95, 1 - ((high - low) / max(high, 1))))
+        predictions.append(NewBookLocationPred(
+            location_id=int(lid),
+            location_name=name,
+            location_type=ltype,
+            wh_id=wh_id,
+            predicted_demand_7d=round(daily * 7, 1),
+            predicted_demand_30d=round(daily * 30, 1),
+            confidence=round(confidence, 2),
+        ))
+
+    model_version = "vertex-sdk-direct"
+    if raw_predictions and isinstance(raw_predictions[0], dict):
+        model_version = raw_predictions[0].get("model_version") or model_version
+
+    total_7d = sum(p.predicted_demand_7d for p in predictions)
+    total_30d = sum(p.predicted_demand_30d for p in predictions)
+    return NewBookPredictResp(
+        isbn13=req.isbn13,
+        model_version=model_version,
+        predicted_at=datetime.now(timezone.utc).isoformat(),
+        predictions=predictions,
+        total_7d=round(total_7d, 1),
+        total_30d=round(total_30d, 1),
+        recommendation=_recommendation(total_7d),
+    )
+
+
 def _mock_new_book_response(req: NewBookPredictReq) -> NewBookPredictResp:
     import random as _rnd
 
@@ -586,14 +680,8 @@ def newbook_predict_demand(req: NewBookPredictReq, ctx: AuthContext = Depends(re
     if ctx.role != "hq-admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="hq-admin only (신간 편입 결정 권한)")
 
-    # 모든 매장 + wh location list (DB 조회)
-    with db_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT location_id, name, location_type, wh_id "
-            "FROM locations WHERE active = TRUE AND COALESCE(is_virtual, FALSE) = FALSE "
-            "ORDER BY location_type, location_id"
-        )
-        loc_rows = cur.fetchall()
+    if settings.gcp_vertex_endpoint_name:
+        return _call_vertex_sdk_direct(req)
 
     if settings.gcp_vertex_invoke_url:
         return _call_gcp_vertex_new_book(req)
@@ -607,46 +695,3 @@ def newbook_predict_demand(req: NewBookPredictReq, ctx: AuthContext = Depends(re
             detail="GCP new-book inference is not configured and mock fallback is disabled",
         )
     return _mock_new_book_response(req)
-
-    # Mock 분포 — 출판사 id 기반 base demand (실제 GCP 응답 모방)
-    base_demand = 30 + (req.publisher_id or 1) % 50  # 30~80 per store / 7d
-    rng = _rnd.Random(hash(req.isbn13) & 0xFFFFFFFF)
-    predictions: list[NewBookLocationPred] = []
-    for lid, name, ltype, wh_id in loc_rows:
-        if ltype == "WH":
-            # WH = 자기 권역 매장 합산 base × 6 매장
-            d7 = base_demand * 6 * rng.uniform(0.7, 1.3)
-        elif ltype == "STORE_ONLINE":
-            d7 = base_demand * rng.uniform(1.5, 2.5)  # 온라인 보통 더 많음
-        else:
-            d7 = base_demand * rng.uniform(0.6, 1.4)
-        d30 = d7 * 4.2  # 4주 × 약간 누적 효과
-        predictions.append(NewBookLocationPred(
-            location_id=lid,
-            location_name=name,
-            location_type=ltype,
-            wh_id=wh_id,
-            predicted_demand_7d=round(d7, 1),
-            predicted_demand_30d=round(d30, 1),
-            confidence=round(rng.uniform(0.65, 0.92), 2),
-        ))
-
-    total_7d = sum(p.predicted_demand_7d for p in predictions if p.location_type != "WH")
-    total_30d = sum(p.predicted_demand_30d for p in predictions if p.location_type != "WH")
-
-    # Recommendation rule (mock):
-    #   total_7d ≥ 800 → STRONG_BUY · 400~799 → BUY · 200~399 → NEUTRAL · <200 → PASS
-    if total_7d >= 800: rec = "STRONG_BUY"
-    elif total_7d >= 400: rec = "BUY"
-    elif total_7d >= 200: rec = "NEUTRAL"
-    else: rec = "PASS"
-
-    return NewBookPredictResp(
-        isbn13=req.isbn13,
-        model_version="mock-pending-gcp-vertexai-v0.1",
-        predicted_at=datetime.now(timezone.utc).isoformat(),
-        predictions=predictions,
-        total_7d=round(total_7d, 1),
-        total_30d=round(total_30d, 1),
-        recommendation=rec,
-    )
