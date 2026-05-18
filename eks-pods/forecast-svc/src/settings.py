@@ -32,5 +32,15 @@ class Settings(BaseSettings):
     gcp_http_timeout_seconds: float = 30.0
     allow_mock_fallback: bool = False
 
+    # Direct Vertex AI SDK call — bypasses Cloud Function, uses VPN private endpoint
+    gcp_vertex_endpoint_name: str | None = None   # full resource name or display name
+    gcp_vertex_location: str = "asia-northeast1"
+    gcp_vertex_project_id: str | None = None      # falls back to bq_project_id
+    gcp_vertex_private_api_endpoint: str | None = None  # e.g. "ENDPOINT_ID.asia-northeast1-aiplatform.googleapis.com"
+
+    # forecast → decision service trigger (post BQ refresh)
+    decision_svc_url: str = "http://decision-svc.bookflow.svc.cluster.local"
+    decision_svc_timeout: float = 5.0
+
 
 settings = Settings()
