@@ -211,14 +211,15 @@ function DetailPanel({
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
 
   // STEP 1 — Vertex AI 수요검증: 본사가 [요청] 버튼을 눌러야 실행.
-  //   결과 수신 시 위치별 30일 수요를 권역(수도권 wh1 · 영남 wh2)별로 합산해 분배 수량 prefill.
+  //   결과 수신 시 위치별 7일 수요를 권역(수도권 wh1 · 영남 wh2)별로 합산해 분배 수량 prefill.
+  //   초기 발주는 안전재고 수준(≈5일치)만 — 30일치는 과다, 판매되며 재발주.
   const predict = useMutation({
     mutationFn: () => postNewBookPredictDemand(role, { isbn13: req.isbn13, publisher_id: req.publisher_id }),
     onSuccess: (d) => {
       let v1 = 0, v2 = 0;
       for (const p of d.predictions) {
-        if (p.wh_id === 1) v1 += p.predicted_demand_30d;
-        else if (p.wh_id === 2) v2 += p.predicted_demand_30d;
+        if (p.wh_id === 1) v1 += p.predicted_demand_7d;
+        else if (p.wh_id === 2) v2 += p.predicted_demand_7d;
       }
       setWh1(Math.round(v1));
       setWh2(Math.round(v2));
